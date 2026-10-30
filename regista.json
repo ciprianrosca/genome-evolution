@@ -18,5 +18,7 @@
     "reviewer.model": {"front_matter": "agents/reviewer.md", "field": "model", "choices": ["opus", "sonnet"]}
   },
   "relations": [["context.warn_pct", "<", "context.limit_pct"]],
+  "never": ["scripts/**", "hooks/**", ".claude-plugin/**", ".codex-plugin/**", "tests/**"],
+  "caps": [{"glob": "agents/*.md", "max_growth_pct": 50}, {"glob": "skills/*/SKILL.md", "max_bytes": 15360}],
   "validate": "claude plugin validate {plugin}"
 }
