@@ -1,0 +1,14 @@
+{
+  "name": "regista",
+  "evolvable": ["agents/*.md", "skills/*/SKILL.md"],
+  "exclude": ["tests/**", "docs/**", ".regista/**", ".git/**", ".claude/**", "genome/**", "**/__pycache__/**"],
+  "version": {"file": ".claude-plugin/plugin.json", "key": "version"},
+  "traits": {
+    "context.warn_pct": {"json": "templates/config.json", "key": "context.warn_pct"},
+    "context.limit_pct": {"json": "templates/config.json", "key": "context.limit_pct"},
+    "review.min_changed_lines": {"json": "templates/config.json", "key": "review.min_changed_lines"},
+    "review.max_rounds": {"json": "templates/config.json", "key": "review.max_rounds"},
+    "reviewer.model": {"front_matter": "agents/reviewer.md", "field": "model"}
+  },
+  "validate": "claude plugin validate {plugin}"
+}
