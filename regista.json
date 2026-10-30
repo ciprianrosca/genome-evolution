@@ -4,11 +4,19 @@
   "exclude": ["tests/**", "docs/**", ".regista/**", ".git/**", ".claude/**", "genome/**", "**/__pycache__/**"],
   "version": {"file": ".claude-plugin/plugin.json", "key": "version"},
   "traits": {
-    "context.warn_pct": {"json": "templates/config.json", "key": "context.warn_pct"},
-    "context.limit_pct": {"json": "templates/config.json", "key": "context.limit_pct"},
-    "review.min_changed_lines": {"json": "templates/config.json", "key": "review.min_changed_lines"},
-    "review.max_rounds": {"json": "templates/config.json", "key": "review.max_rounds"},
-    "reviewer.model": {"front_matter": "agents/reviewer.md", "field": "model"}
+    "context.warn_pct": {"json": "templates/config.json", "key": "context.warn_pct", "min": 45, "max": 60, "step": 5},
+    "context.limit_pct": {"json": "templates/config.json", "key": "context.limit_pct", "min": 55, "max": 75,
+                          "step": 5},
+    "review.min_changed_lines": {"json": "templates/config.json", "key": "review.min_changed_lines",
+                                 "min": 5, "max": 30, "step": 5, "looser": "higher",
+                                 "project": [{"json": ".regista/config.json", "key": "review.min_changed_lines"},
+                                             {"json": ".daedalus/config.json", "key": "review.min_changed_lines"}]},
+    "review.max_rounds": {"json": "templates/config.json", "key": "review.max_rounds", "min": 2, "max": 4, "step": 1,
+                          "looser": "higher",
+                          "project": [{"json": ".regista/config.json", "key": "review.max_rounds"},
+                                      {"json": ".daedalus/config.json", "key": "review.max_rounds"}]},
+    "reviewer.model": {"front_matter": "agents/reviewer.md", "field": "model", "choices": ["opus", "sonnet"]}
   },
+  "relations": [["context.warn_pct", "<", "context.limit_pct"]],
   "validate": "claude plugin validate {plugin}"
 }
