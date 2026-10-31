@@ -1,5 +1,6 @@
 {
   "name": "regista",
+  "describe": "a set of instructions that guides AI coding agents through building software",
   "evolvable": ["agents/*.md", "skills/*/SKILL.md"],
   "exclude": ["tests/**", "docs/**", ".regista/**", ".git/**", ".claude/**", "genome/**", "**/__pycache__/**"],
   "version": {"file": ".claude-plugin/plugin.json", "key": "version"},
