@@ -21,6 +21,7 @@
   "relations": [["context.warn_pct", "<", "context.limit_pct"]],
   "never": ["scripts/**", "hooks/**", ".claude-plugin/**", ".codex-plugin/**", "tests/**"],
   "caps": [{"glob": "agents/*.md", "max_growth_pct": 50}, {"glob": "skills/*/SKILL.md", "max_bytes": 15360}],
+  "judges": ["agents/reviewer.md"],
   "validate": "claude plugin validate {plugin}",
   "checks": ["python3 -m unittest discover -s tests", "claude plugin validate ."]
 }
