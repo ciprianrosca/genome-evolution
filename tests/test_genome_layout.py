@@ -19,6 +19,7 @@ import ast
 import copy
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -111,6 +112,70 @@ def checkout_files(root):
     return sorted(found)
 
 
+# Calls that take a path or a command: a genome file name passed to one of these is a use of the genome's code.
+PATH_OR_COMMAND_MODULES = ("subprocess.", "os.", "shutil.", "runpy.", "pathlib.", "importlib.")
+PATH_OR_COMMAND_CALLS = {"open", "Path", "PurePath", "PosixPath", "run", "Popen", "call", "check_call", "check_output",
+                         "system", "popen", "run_path", "run_module", "spec_from_file_location", "join"}
+# The ways a string can flow into such a call's argument: inside a list, an f-string, a concatenation, a keyword.
+PASS_THROUGH = (ast.List, ast.Tuple, ast.Starred, ast.JoinedStr, ast.FormattedValue, ast.BinOp, ast.keyword)
+PATH_STRING = re.compile(r"[/\\]\s*(?:%s)\b" % "|".join(re.escape(n) for n in GENOME_SCRIPTS))
+
+
+def parent_map(tree):
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    return parents
+
+
+def used_as_path_or_command(node, parents):
+    """Whether a string naming a genome file is used as a path or a command, not just as a word: it flows into
+    subprocess, open, os, os.path, pathlib, runpy or importlib, is joined with a folder (`Path(d) / "evolve.py"`), or
+    is itself a path (`genome/scripts`, `scripts/evolve.py`) kept as a value (a constant, a list item, a return value).
+    A plain word, such as a label in a list of words a scanner forbids, is not a use, and neither is a path written
+    as text handed to some other function (tests/test_without_genome.py plants such text in a temporary file to
+    check its scanner finds it)."""
+    is_path = "genome/scripts" in node.value or bool(PATH_STRING.search(node.value))
+    current = node
+    while id(current) in parents:
+        parent = parents[id(current)]
+        if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Div):
+            return True  # a pathlib path: Path(folder) / "evolve.py"
+        if isinstance(parent, ast.Call):
+            if current is parent.func:
+                return False
+            name = call_name(parent)
+            return name.startswith(PATH_OR_COMMAND_MODULES) or name.split(".")[-1] in PATH_OR_COMMAND_CALLS
+        if not isinstance(parent, PASS_THROUGH):
+            return is_path
+        current = parent
+    return is_path
+
+
+def genome_reaches(tree):
+    """Where a test's code reaches the genome's code: '<line> <what>' for each import of a genome module, each
+    import_module or __import__ of one, each os.path.join into genome/scripts, and each genome file name used as a
+    path or a command. Docstrings are text, not code, and are left out."""
+    docs = docstring_nodes(tree)
+    parents = parent_map(tree)
+    problems = [f"{line} imports {name}" for line, name in imported_names(tree) if name in GENOME_MODULES]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and call_name(node).split(".")[-1] in ("import_module", "__import__"):
+            for arg in node.args[:1]:
+                if isinstance(arg, ast.Constant) and str(arg.value).split(".")[0] in GENOME_MODULES:
+                    problems.append(f"{node.lineno} loads {arg.value}")
+        if isinstance(node, ast.Call) and call_name(node).endswith("path.join"):
+            parts = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+            if any(a == "genome" and b == "scripts" for a, b in zip(parts, parts[1:])):
+                problems.append(f"{node.lineno} builds a path into genome/scripts")
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs
+              and any(word in node.value for word in GENOME_SCRIPTS + ("genome/scripts",))
+              and used_as_path_or_command(node, parents)):
+            problems.append(f"{node.lineno} names the genome's code: {node.value[:80]!r}")
+    return problems
+
+
 # SEP-1: the layout ----------------------------------------------------------------------------------------------------
 
 class GenomeFolderLayout(unittest.TestCase):
@@ -148,24 +213,28 @@ class GenomeFolderLayout(unittest.TestCase):
         self.assertTrue(os.path.isdir(tests), "Regista's tests/ folder is missing")
         problems = []
         for path in python_files(tests):
-            tree = parse(path)
-            docs = docstring_nodes(tree)
-            for line, name in imported_names(tree):
-                if name in GENOME_MODULES:
-                    problems.append(f"{rel(path)}:{line} imports {name}")
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and call_name(node).split(".")[-1] in ("import_module", "__import__"):
-                    for arg in node.args[:1]:
-                        if isinstance(arg, ast.Constant) and str(arg.value).split(".")[0] in GENOME_MODULES:
-                            problems.append(f"{rel(path)}:{node.lineno} loads {arg.value}")
-                elif isinstance(node, ast.Call) and call_name(node).endswith("path.join"):
-                    parts = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-                    if any(a == "genome" and b == "scripts" for a, b in zip(parts, parts[1:])):
-                        problems.append(f"{rel(path)}:{node.lineno} builds a path into genome/scripts")
-                elif (isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs
-                      and any(word in node.value for word in GENOME_SCRIPTS + ("genome/scripts",))):
-                    problems.append(f"{rel(path)}:{node.lineno} names the genome's code: {node.value[:80]!r}")
+            problems += [f"{rel(path)}:{p}" for p in genome_reaches(parse(path))]
         self.assertEqual(problems, [], "Regista's tests reach the genome's code")
+
+    def test_the_genome_scanner_still_catches_a_test_that_runs_the_genome(self):  # covers: SEP-1
+        """A self-check: a planted test that imports, loads, opens or runs a genome module is caught, and one that
+        only lists the genome's file names as words (as tests/test_without_genome.py does) is not."""
+        reaching = {
+            "import evolve": "imports",
+            "import importlib\nimportlib.import_module('evolve_core')": "loads",
+            "import os\nos.path.join(ROOT, 'genome', 'scripts', 'x')": "path into genome/scripts",
+            "import subprocess, sys\nsubprocess.run([sys.executable, 'evolve.py', 'bench'])": "runs",
+            "import subprocess, sys, os\nsubprocess.run([sys.executable, os.path.join(D, 'suite.py')])": "runs",
+            "open('genome.py').read()": "opens",
+            "CMD = 'python3 genome/scripts/evolve.py bench'": "a path into genome/scripts",
+            "from pathlib import Path\nP = Path(ROOT) / 'evolve_core.py'": "a pathlib path",
+        }
+        for source, what in reaching.items():
+            with self.subTest(what=what):
+                self.assertTrue(genome_reaches(ast.parse(source)), f"the scanner misses a test that {what}: {source}")
+        words = ("FORBIDDEN = [('evolve.py', 1), ('suite.py', 2)]\nLABEL = 'genome.py'\nMSG = f'names {LABEL}'\n"
+                 "found = scan(plant('x.md', 'run genome/scripts/evolve.py now'))")
+        self.assertEqual(genome_reaches(ast.parse(words)), [], "a plain string naming a genome file is not a use")
 
 
 # SEP-2: nothing under genome/ imports Regista; the adapter runs Regista's command line -------------------------------
