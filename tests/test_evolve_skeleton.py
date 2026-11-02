@@ -20,11 +20,13 @@ import unittest
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 EVOLVE = os.path.join(REPO, "scripts", "evolve.py")
 # The local modules evolve.py may import: scripts/genome.py (spec genome-seed), scripts/evolve_core.py (spec
-# adapter-core) and scripts/suite.py (spec suite-files). Each is otherwise standard library only, and may import only
-# the local modules listed for it here: suite imports genome and evolve_core, evolve_core imports genome, and genome
-# imports no local module (spec adapter-core, point 7).
-LOCAL_MODULES = {"genome", "evolve_core", "suite"}
-LOCAL_IMPORTS = {"genome": set(), "evolve_core": {"genome"}, "suite": {"genome", "evolve_core"}}
+# adapter-core), scripts/suite.py (spec suite-files) and scripts/runners.py (spec suite-runs). Each is otherwise
+# standard library only, and may import only the local modules listed for it here: suite imports genome, evolve_core
+# and runners, runners imports evolve_core, evolve_core imports genome, and genome imports no local module (spec
+# adapter-core, point 7).
+LOCAL_MODULES = {"genome", "evolve_core", "suite", "runners"}
+LOCAL_IMPORTS = {"genome": set(), "evolve_core": {"genome"}, "suite": {"genome", "evolve_core", "runners"},
+                 "runners": {"evolve_core"}}
 PY = sys.executable
 
 DEFAULTS = {"target": "auto", "population": 6, "generations_max": 1, "task_model": "sonnet",
@@ -104,8 +106,9 @@ class Evo1StandardLibraryOnly(unittest.TestCase):
                 self.assertNotEqual(top, "regista", f"scripts/{module}.py must not import the harness")
                 if top in LOCAL_MODULES:
                     self.assertIn(top, LOCAL_IMPORTS[module],
-                                  f"scripts/{module}.py may not import {top}: suite may import only genome and "
-                                  f"evolve_core, evolve_core only genome, and genome no local module")
+                                  f"scripts/{module}.py may not import {top}: suite may import only genome, "
+                                  f"evolve_core and runners, runners only evolve_core, evolve_core only genome, "
+                                  f"and genome no local module")
                     self.assertEqual(name, top, f"scripts/{module}.py: only a local module itself may be imported")
                     local.append(top)
                     continue

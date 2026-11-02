@@ -109,6 +109,8 @@ import genome as genome_lib  # noqa: E402
 import evolve_core  # noqa: E402
 # Suite files (the cases any set of text files is judged on): their format, checks and stable split.
 import suite as suite_lib  # noqa: E402
+# Runners (how a case's agent starts): the default runner's environment, sandbox and output reading, shared here.
+import runners  # noqa: E402
 DEFAULT_PROFILE = os.path.join(GENOME_DIR, "profiles", "regista.json")
 
 LAYOUT = ("bench", "genomes", "runs", "reports")
@@ -3388,15 +3390,15 @@ CLAUDE_FOLDER_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 # is used only from that version on, and only where its runtime can start (bubblewrap and socat on Linux,
 # sandbox-exec on macOS).
 SANDBOX_MIN_VERSION = (2, 1, 312)
-SANDBOX_RUNTIME = {"linux": ("bwrap", "socat"), "darwin": ("sandbox-exec",)}
+SANDBOX_RUNTIME = runners.SANDBOX_RUNTIME
 SANDBOX_PROBE_SECONDS = 20  # how long `claude --version` may take
 # Variables that never reach claude. API credentials, so it runs on the subscription's login: anything starting
 # with ANTHROPIC_ or CLAUDE_CODE_USE_, and the cloud providers' keys Claude Code reads. And the parent session's
 # own variables when evolve.py runs inside Claude Code or Regista: anything starting with CLAUDE (CLAUDECODE,
 # CLAUDE_CODE_SESSION_ID, CLAUDE_PROJECT_DIR ...), REGISTA_ or DAEDALUS_, and AI_AGENT. Kept: the subscription's
 # own login (CLAUDE_CODE_OAUTH_TOKEN) and where it is stored (CLAUDE_CONFIG_DIR).
-CREDENTIAL_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
-CREDENTIAL_NAMES = frozenset({"AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_API_KEY_HELPER", "CLAUDE_API_KEY"})
+CREDENTIAL_PREFIXES = runners.CREDENTIAL_PREFIXES
+CREDENTIAL_NAMES = runners.CREDENTIAL_NAMES
 PARENT_PREFIXES = ("CLAUDE", "REGISTA_", "DAEDALUS_")
 PARENT_NAMES = frozenset({"AI_AGENT"})
 # Variables pointing at local sockets that lead out of the sandbox (the desktop session bus, the SSH agent): never
@@ -3405,13 +3407,12 @@ SOCKET_NAMES = frozenset({"DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK"})
 # The sockets fenced off (denyRead and denyWrite) when the sandbox allows every unix socket on Linux: the user's
 # session folder (its bus, its keyring and agent sockets) and Docker's, under both names since no symlink is followed.
 ESCAPE_SOCKETS = ("/run/user", "/var/run/docker.sock", "/run/docker.sock")
-KEPT_NAMES = frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"})
+KEPT_NAMES = runners.KEPT_NAMES
 # The init event's apiKeySource on the subscription's login (Claude Code reads a missing one as "none" too). Any
 # other value (ANTHROPIC_API_KEY, apiKeyHelper, a managed key) can mean API billing: the run is stopped at once.
 LOGIN_KEY_SOURCES = frozenset({"none"})
 # A result text saying the subscription's usage limit was hit ("You've hit your session limit · resets 3:45pm").
-LIMIT_TEXT = re.compile(r"\b(?:you've|you have) (?:hit|reached) your\b[^.\n]{0,40}?\blimit\b|\busage limit reached\b",
-                        re.I)
+LIMIT_TEXT = runners.LIMIT_TEXT
 LIMIT_RESETS = re.compile(r"\bresets?\s+(?:at\s+)?([^.\n]{1,40})", re.I)
 # The rule-breaking guards: a refusal of theirs labelled real ends a replay early and makes it a hard failure when
 # scored (the agent tried something a replay must never do: touch a protected path, skip the hooks or run them by
@@ -3480,15 +3481,7 @@ def config_words(config, key):
     return list(value)
 
 
-def claude_command(config):
-    """evolve.json claude_command (default `claude`): one program, or a list of program and arguments."""
-    value = config.get("claude_command", "claude")
-    if isinstance(value, str) and value.strip():
-        return [value]
-    if isinstance(value, list) and value and all(isinstance(v, str) and v for v in value):
-        return list(value)
-    raise EvolveError("claude_command in evolve.json must be a program (a string) or a list of program and "
-                      "arguments.")
+claude_command = runners.claude_command  # evolve.json claude_command: a program, or program and arguments
 
 
 def harness_config(root):
@@ -3713,12 +3706,7 @@ def sandbox_read_denied(ws):
     return private_folders(ws) + private_transcripts(ws)[1]
 
 
-def require_sandbox(config):
-    """evolve.json require_sandbox (default true): a real replay refuses to start without the sandbox."""
-    value = config.get("require_sandbox", True)
-    if not isinstance(value, bool):
-        raise EvolveError("require_sandbox in evolve.json must be true or false.")
-    return value
+require_sandbox = runners.require_sandbox  # evolve.json require_sandbox (default true)
 
 
 def sandbox_support(config, env):
@@ -4488,17 +4476,7 @@ def transcript_files(session_id, env=None):
             + sorted(glob.glob(os.path.join(base, sid, "subagents", "*.jsonl"))))
 
 
-def token_totals(usage):
-    """The token counts of {message id: usage}: "used" is input + cache creation + output; cache reads are apart
-    (cheap, and they dominate the raw sum)."""
-    keys = ("input_tokens", "cache_creation_input_tokens", "output_tokens", "cache_read_input_tokens")
-    totals = {k: 0 for k in keys}
-    for u in usage.values():
-        for k in keys:
-            if isinstance(u.get(k), int) and not isinstance(u.get(k), bool):
-                totals[k] += u[k]
-    used = totals["input_tokens"] + totals["cache_creation_input_tokens"] + totals["output_tokens"]
-    return {"used": used, **totals}
+token_totals = runners.token_totals  # "used" is input + cache creation + output; cache reads apart
 
 
 def text_parts(event):
@@ -7525,6 +7503,47 @@ def cmd_suite_check(args):
     return 0
 
 
+SUITE_OUTCOME_EXIT = {"done": 0, "paused": 3}  # suite run's exit code by outcome; anything else is 1
+SUITE_OUTCOME_WORDS = {"done": "done", "failed": "failed (the runner exited with an error)",
+                       "timeout": "timed out (stopped at the suite's time limit)",
+                       "paused": "paused at the Claude subscription's usage limit", "aborted": "aborted"}
+
+
+def cmd_suite_run(args, home, config):
+    """`suite run` (SUI-13): run one case of a suite with one individual (any folder, or a stored genome's
+    plugin/) in a throwaway workspace; the run folder is runs/<generation or adhoc>/<case>/<genome or
+    individual>/. Prints one line; exit 0 for done, 3 for paused, 1 otherwise."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop_signal)
+    generation = args.id or "adhoc"
+    if not evolve_core.safe_name(generation):
+        raise EvolveError(f"--id {generation} isn't a plain name (letters, digits, _ . -, starting with a letter or "
+                          f"digit).")
+    loaded = suite_lib.load_suite(args.suite)
+    case = suite_lib.find_case(loaded, args.case)
+    if args.genome is not None:
+        if not evolve_core.safe_name(args.genome):
+            raise EvolveError(f"--genome {args.genome} isn't a genome id (a plain name).")
+        individual = genome_lib.check_individual(home, args.genome)
+    else:
+        individual = os.path.abspath(args.individual)
+        if not os.path.isdir(individual):
+            raise EvolveError(f"--individual {args.individual} isn't a folder; give the folder holding the target's "
+                              f"files.")
+    folder = os.path.join(home, "runs", generation, case["id"], args.genome or "individual")
+    # The agent may read nothing of the working folder: earlier runs keep copies of check scripts, output logs and
+    # workspaces there, and genomes/ holds other individuals.
+    result = suite_lib.run_case(loaded, case["id"], individual, folder, config, keep=args.keep, deny_read=(home,))
+    outcome = result["outcome"]
+    said = SUITE_OUTCOME_WORDS.get(outcome, outcome)
+    if result.get("problem"):
+        said += f" ({result['problem'].rstrip('.')})"
+    kept = f"; the workspace is kept in {result['workspace']}" if result.get("workspace") else ""
+    print(f"Case {case['id']}: {said}, {tokens_text(result['tokens']['used'])} tokens used{kept}. Its "
+          f"result.json is in {folder}.")
+    return SUITE_OUTCOME_EXIT.get(outcome, 1)
+
+
 def run_standalone(args):
     """A command that needs no working folder and no config (suite check): a problem is one line,
     `evolve.py: <message>`, and exit code 1."""
@@ -7658,7 +7677,8 @@ def build_parser():
     p.add_argument("--profile", default=DEFAULT_PROFILE, help="the target's profile (default: genome/profiles/regista.json)")
     p.set_defaults(func=cmd_promote, check_first=refuse_unknown_adapter)
 
-    suite = sub.add_parser("suite", help="check a suite file: the cases any set of text files is judged on")
+    suite = sub.add_parser("suite", help="check a suite file, or run one of its cases: the cases any set of text "
+                                         "files is judged on")
     suite_sub = suite.add_subparsers(dest="suite_command", required=True, metavar="suite-command")
     p = suite_sub.add_parser("check", help="validate a suite file and print its cases, split and checks; runs "
                                            "nothing and writes nothing")
@@ -7668,6 +7688,17 @@ def build_parser():
                         "scripts a genome could change")
     p.add_argument("--source", default=None, help="the target's source folder (with --profile)")
     p.set_defaults(func=cmd_suite_check, standalone=True)
+    p = suite_sub.add_parser("run", help="run one case of a suite with one individual in a throwaway workspace and "
+                                         "write its result.json (no check runs yet)")
+    p.add_argument("suite", help="the suite file (JSON)")
+    p.add_argument("case", help="the case's id")
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument("--individual", default=None,
+                       help="a folder of the target's files (copied into the workspace, never changed)")
+    which.add_argument("--genome", default=None, help="a stored genome, whose genomes/<id>/plugin/ is the individual")
+    p.add_argument("--keep", action="store_true", help="keep the workspace in the run folder")
+    p.add_argument("--id", default=None, help="the generation the run belongs to (default: adhoc)")
+    p.set_defaults(func=cmd_suite_run)
     return parser
 
 

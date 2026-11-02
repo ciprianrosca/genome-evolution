@@ -16,25 +16,35 @@ wins, and the others are ordered by the sha256 of "<suite name>:<case id>", the 
 of them held out. Every problem raises SuiteError with one plain sentence naming the suite file and, when known,
 the case and the check.
 
-This module is standard library only, plus genome.py (paths and globs) and evolve_core.py (the error class). It
-names no target: everything specific to one lives in the suite file and the target's profile."""
+run_case runs one case with one individual (a folder of the target's files) in a fresh throwaway workspace, through
+the suite's runner (runners.py), and writes the run folder's result.json.
+
+This module is standard library only, plus genome.py (paths and globs), evolve_core.py (the error class) and
+runners.py (how a case's agent is started). It names no target: everything specific to one lives in the suite file
+and the target's profile."""
 import hashlib
 import json
 import math
 import os
 import re
+import shutil
+import stat
 import string
+import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import genome as genome_lib  # noqa: E402
 import evolve_core  # noqa: E402
+import runners  # noqa: E402
 
-DEFAULT_RUNNER = "claude"  # the default runner's name; the runner itself is built in a later step
+DEFAULT_RUNNER = runners.DEFAULT_RUNNER  # the default runner's name (runners.py runs it)
 TOKEN_READERS = ("none", "claude-json")  # how a custom runner's output tells its tokens: not at all, or as JSON
 PLACEHOLDERS = ("workspace", "individual", "prompt_file", "prompt", "model")  # what a runner template may use
+PROJECT_SETTINGS = (".claude/settings.json", ".claude/settings.local.json")  # never left in a workspace
 CHECKS_PLACEHOLDER = "{checks}"  # in a command check: the folder the suite's check scripts are copied to
 
 TOP_KEYS = ("name", "describe", "install", "runner", "model", "timeout_minutes", "holdout_pct", "screen_cases",
@@ -557,6 +567,9 @@ def summary_lines(suite):
              f"held out."]
     if suite["describe"]:
         lines.append(suite["describe"])
+    if suite["sandbox"] and isinstance(suite["runner"], dict):
+        lines.append("Its runner is the suite's own command, which the evolver doesn't sandbox: the agent's commands "
+                     "can reach anything your user can.")
 
     def counts(cid):
         kinds = [c["kind"] for c in cases[cid]["checks"]]
@@ -570,3 +583,326 @@ def summary_lines(suite):
     for cid in split["holdout"]:
         lines.append(f"  {cid} (held out): {counts(cid)}")
     return lines
+
+
+# ---------------------------------------------------------------- running one case
+
+RESULT_NAME = "result.json"
+PROMPT_NAME = "prompt.txt"
+OUTPUT_NAME = "output.log"
+CHECKS_NAME = "checks"
+KEPT_NAME = "workspace"
+WORKSPACE_PREFIX = "suite-workspace-"
+
+
+class PrepareFailed(Exception):
+    """The workspace couldn't be prepared; the message is the result's problem sentence."""
+
+
+def real_inside(path, folder):
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def find_case(suite, case_id):
+    for case in suite["cases"]:
+        if case["id"] == case_id:
+            return case
+    raise SuiteError(f"The suite {suite['path']} has no case {case_id}; its cases are "
+                     f"{', '.join(c['id'] for c in suite['cases'])}.")
+
+
+def case_prompt(suite, case):
+    """The case's prompt: its prompt, or its prompt_file's text."""
+    if case["prompt"] is not None:
+        return case["prompt"]
+    with open(os.path.join(suite["root"], case["prompt_file"]), encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def link_leading_out(folder):
+    """The first entry under folder (relative, with /) whose real path leaves folder through a link, or None."""
+    top = os.path.realpath(folder)
+    for path, real, _is_folder in checks_dir_entries(folder):
+        if real != top and not real.startswith(top.rstrip(os.sep) + os.sep):
+            return os.path.relpath(path, folder).replace(os.sep, "/")
+    return None
+
+
+def copy_into(src, dest):
+    """Copy a file or a folder's contents to dest, following links (the copy holds no link back to the source)."""
+    if os.path.isdir(src):
+        shutil.copytree(src, dest, symlinks=False, dirs_exist_ok=True)
+    else:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+
+
+def frozen_hashes(workspace, globs):
+    """{workspace path: sha256} of every file in the workspace matching the case's frozen globs."""
+    if not globs:
+        return {}
+    matches = genome_lib.matcher(globs)
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        dirnames.sort()
+        for name in sorted(filenames):
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, workspace).replace(os.sep, "/")
+            if os.path.isfile(path) and matches(rel):
+                found[rel] = genome_lib.sha256_bytes(genome_lib.read_bytes(path))
+    return found
+
+
+def prepare_workspace(suite, case, individual, workspace):
+    """Copy the case's fixtures into the workspace, then the individual's files at the install path, then remove
+    the project settings files either brought (PROJECT_SETTINGS); return the frozen fixtures' hashes. Raises
+    PrepareFailed with a plain sentence."""
+    root = suite["root"]
+    for dest, src in case["files"].items():
+        source = os.path.join(root, src)
+        target = workspace if dest == "." else os.path.join(workspace, *dest.split("/"))
+        leak = link_leading_out(source) if os.path.isdir(source) else None
+        if leak is not None:
+            raise PrepareFailed(f"The fixture folder {src} holds {leak}, a link leading out of that folder; copy "
+                                f"the file into the fixture instead of linking to it.")
+        try:
+            copy_into(source, target)
+        except (OSError, shutil.Error) as e:
+            raise PrepareFailed(f"The fixture {src} couldn't be copied into the workspace at {dest} "
+                                f"({getattr(e, 'strerror', None) or e}).") from None
+    install = suite["install"]
+    target = workspace if install == "." else os.path.join(workspace, *install.split("/"))
+    leak = link_leading_out(individual)
+    if leak is not None:
+        raise PrepareFailed(f"The individual {individual} holds {leak}, a link leading out of that folder; copy the "
+                            f"file into the individual instead of linking to it.")
+    try:
+        copy_into(individual, target)
+    except (OSError, shutil.Error) as e:
+        raise PrepareFailed(f"The individual {individual} couldn't be installed in the workspace at {install} "
+                            f"({getattr(e, 'strerror', None) or e}).") from None
+    remove_project_settings(workspace)
+    try:
+        return frozen_hashes(workspace, case["frozen"])
+    except OSError as e:
+        raise PrepareFailed(f"The frozen fixtures couldn't be read in the workspace ({e.strerror or e}).") from None
+
+
+def private_parts(suite):
+    """The suite's files the agent may never read, listed one by one so they stay denied when the suite's folder
+    can't be denied whole (a suite file directly in the home folder): the suite file, its checks_dir, every case's
+    prompt_file, rubric_file and fixtures."""
+    root = suite["root"]
+    parts = [suite["path"], os.path.join(root, suite["checks_dir"])]
+    for case in suite["cases"]:
+        if case["prompt_file"] is not None:
+            parts.append(os.path.join(root, case["prompt_file"]))
+        parts += [os.path.join(root, src) for src in case["files"].values()]
+        parts += [os.path.join(root, check["rubric_file"]) for check in case["checks"]
+                  if check.get("rubric_file") is not None]
+    return parts
+
+
+def repository_git_dirs(folder):
+    """The git directories of the repository holding folder, whose history holds the suite's committed files: its
+    own git directory and the shared one (the same folder for a plain repository; a worktree's own folder and the
+    main repository's .git for a worktree). Found with git itself, run so it executes nothing from the repository's
+    setup (no hooks, no fsmonitor, no external diff, no GIT_* variable from the environment). When git is missing or
+    refuses the repository (another user's, say), the first .git found walking up from folder, and the folder a .git
+    file points to. [] when folder lies in no repository."""
+    cmd = ["git", "--no-optional-locks"]
+    for setting in evolve_core.SAFE_GIT_CONFIG:
+        cmd += ["-c", setting]
+    cmd += ["-C", folder, "rev-parse", "--git-dir", "--git-common-dir"]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    try:
+        r = subprocess.run(cmd, capture_output=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
+        lines = [ln for ln in os.fsdecode(r.stdout).split("\n") if ln] if r.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired):
+        lines = []
+    if lines:
+        return list(dict.fromkeys(os.path.abspath(os.path.join(folder, ln)) for ln in lines))
+    return dotgit_walk(folder)
+
+
+def dotgit_walk(folder):
+    """The first .git above or at folder, and the git directory a .git file points to (gitdir: ...); [] if none."""
+    here = os.path.abspath(folder)
+    while True:
+        dotgit = os.path.join(here, ".git")
+        if os.path.lexists(dotgit):
+            found = [dotgit]
+            if os.path.isfile(dotgit):
+                try:
+                    with open(dotgit, encoding="utf-8", errors="replace") as f:
+                        first = f.readline().strip()
+                except OSError:
+                    first = ""
+                if first.startswith("gitdir:"):
+                    found.append(os.path.abspath(os.path.join(here, first[len("gitdir:"):].strip())))
+            return found
+        parent = os.path.dirname(here)
+        if parent == here:
+            return []
+        here = parent
+
+
+def remove_project_settings(workspace):
+    """Remove .claude/settings.json and .claude/settings.local.json from the workspace: settings a fixture or the
+    individual brought would load in Claude Code (hooks running outside the sandbox, sandbox lists merged). Returns
+    the workspace paths removed."""
+    removed = []
+    for name in PROJECT_SETTINGS:
+        path = os.path.join(workspace, *name.split("/"))
+        if os.path.lexists(path):
+            try:
+                remove_tree(path)
+            except OSError as e:
+                raise PrepareFailed(f"{name}, which a fixture or the individual put in the workspace, couldn't be "
+                                    f"removed ({e.strerror or e}); a run never starts with project settings of "
+                                    f"its own.") from None
+            removed.append(name)
+    return removed
+
+
+def remove_tree(path):
+    """Remove a folder even where the agent left read-only folders behind."""
+    def retry(func, target, _info):
+        try:
+            os.chmod(os.path.dirname(target), stat.S_IRWXU)
+            os.chmod(target, stat.S_IRWXU)
+        except OSError:
+            pass
+        try:
+            func(target)
+        except OSError:
+            pass
+    if os.path.lexists(path):
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, onerror=retry)
+        else:
+            os.unlink(path)
+
+
+def copy_checks(suite, folder, result):
+    """Copy the suite's checks_dir fresh into folder/checks/. When that fails, the run can't be checked: the
+    outcome becomes aborted and result's problem says why (the partial copy is removed)."""
+    checks = os.path.join(suite["root"], suite["checks_dir"])
+    if not os.path.isdir(checks):
+        return
+    dest = os.path.join(folder, CHECKS_NAME)
+    try:
+        shutil.copytree(checks, dest, symlinks=False)
+    except (OSError, shutil.Error) as e:
+        if isinstance(e, shutil.Error) and e.args and isinstance(e.args[0], list) and e.args[0]:
+            first = e.args[0][0]
+            reason = f"{first[0]}: {first[2]}" if len(first) == 3 else str(first)
+            if len(e.args[0]) > 1:
+                reason += f", and {len(e.args[0]) - 1} more"
+        else:
+            reason = getattr(e, "strerror", None) or str(e)
+            if getattr(e, "filename", None):
+                reason = f"{e.filename}: {reason}"
+        remove_tree(dest)
+        result.update(outcome="aborted", problem=f"The check scripts in {checks} couldn't be copied into the run "
+                                                 f"folder after the runner ended ({reason}), so the run can't be "
+                                                 f"checked.")
+
+
+def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
+    """Run the case (its id) of the suite (load_suite's dict) with the individual (a folder of the target's files)
+    and write the run folder's prompt.txt, output.log, checks/ and result.json; return the result.
+
+    The workspace is a new temporary folder outside the suite's folder, the individual and the run folder. It gets
+    the case's fixtures, then the individual's files at the suite's install path; the frozen fixtures are hashed
+    before the runner starts. After the runner ends, the suite's checks_dir is copied fresh into folder/checks/
+    (never into the workspace). The workspace is then removed, or with keep moved to folder/workspace/. The suite's
+    folder and the individual are only read. result.json: case, outcome (done, failed, timeout or paused, from the
+    runner; aborted with a problem sentence when the workspace couldn't be prepared or the runner couldn't start),
+    tokens {used}, runner {exit, seconds}, started_at, ended_at, frozen {path: sha256}, workspace (kept path or
+    null). deny_read lists more folders the default runner's agent may not read (the evolver's working folder,
+    with earlier runs' check scripts and other individuals); the suite's folder (or, when it holds the home folder,
+    its suite file, checks_dir, prompt, rubric and fixture files one by one), the individual and the run folder are
+    always denied, and so are the git directories of a repository holding the suite file (its history holds the
+    check scripts); a run whose private paths can't all be denied is aborted with a problem sentence. The
+    workspace never holds .claude/settings.json or .claude/settings.local.json (removed after the copy). A check
+    scripts copy that fails gives the outcome aborted with a problem sentence (the workspace is
+    still removed). The default runner refused for a missing sandbox raises (runners.SandboxRefused) before
+    anything is written; so does a case the suite doesn't have, or a run folder overlapping the suite's folder or
+    the individual."""
+    entry = find_case(suite, case)
+    runners.check_ready(suite["runner"], config, suite["sandbox"])
+    individual = os.path.abspath(individual)
+    folder = os.path.abspath(folder)
+    if not os.path.isdir(individual):
+        raise evolve_core.EvolveError(f"The individual {individual} isn't a folder; give the folder holding the "
+                                      f"target's files.")
+    for name, other in (("the suite's folder", suite["root"]), ("the individual", individual)):
+        if real_inside(folder, other) or (os.path.exists(folder) and real_inside(other, folder)):
+            raise evolve_core.EvolveError(f"The run folder {folder} overlaps {name} ({other}), which a run must "
+                                          f"never change; run it elsewhere.")
+    os.makedirs(folder, exist_ok=True)
+    for name in (RESULT_NAME, OUTPUT_NAME, PROMPT_NAME, CHECKS_NAME, KEPT_NAME):
+        remove_tree(os.path.join(folder, name))
+    result = {"case": entry["id"], "outcome": None, "tokens": {"used": 0}, "runner": {"exit": None, "seconds": 0},
+              "started_at": evolve_core.now_iso(), "ended_at": None, "frozen": {}, "workspace": None}
+    workspace = None
+    try:
+        try:
+            prompt = case_prompt(suite, entry)
+        except (OSError, UnicodeDecodeError) as e:
+            raise PrepareFailed(f"The prompt file {entry['prompt_file']} couldn't be read "
+                                f"({getattr(e, 'strerror', None) or e}).") from None
+        prompt_file = os.path.join(folder, PROMPT_NAME)
+        with open(prompt_file, "w", encoding="utf-8", newline="") as f:
+            f.write(prompt)
+        workspace = os.path.realpath(tempfile.mkdtemp(prefix=WORKSPACE_PREFIX))
+        private = [("the suite's folder", suite["root"]), ("the individual", individual), ("the run folder", folder)]
+        private += [("a folder the agent may not read", other) for other in deny_read]
+        for name, other in private:
+            if real_inside(workspace, other) or real_inside(other, workspace):
+                raise PrepareFailed(f"The temporary folder for the workspace ({workspace}) overlaps {name} "
+                                    f"({other}); set TMPDIR to a folder outside both.")
+        result["frozen"] = prepare_workspace(suite, entry, individual, workspace)
+        installed = workspace if suite["install"] == "." else os.path.join(workspace, *suite["install"].split("/"))
+        # The suite's folder whole when it can be denied (it doesn't hold the home folder), and its private files
+        # one by one in any case; runners.run refuses the run when one of these can't be denied.
+        private_reads = [suite["root"]] if not runners.holds_home(suite["root"]) else []
+        private_reads += private_parts(suite) + [individual, folder, *deny_read]
+        # The git directories of a repository holding the suite: its history holds the committed check scripts.
+        git_dirs = repository_git_dirs(os.path.dirname(os.path.abspath(suite["path"])))
+        if suite["runner"] == DEFAULT_RUNNER:
+            for git_dir in git_dirs:
+                why = runners.undeniable(git_dir, workspace)
+                if why is not None:
+                    raise PrepareFailed(f"The agent can't be kept from reading {git_dir}, the git folder of the "
+                                        f"repository holding the suite, whose history holds its check scripts: "
+                                        f"{why}. Keep the suite in a repository whose git folder holds neither, "
+                                        f"or outside any repository, then run again.")
+        private_reads += git_dirs
+        ran = runners.run(suite["runner"], workspace, installed, prompt, suite["model"],
+                          suite["timeout_minutes"] * 60, config=config, output=os.path.join(folder, OUTPUT_NAME),
+                          prompt_file=prompt_file, sandbox=suite["sandbox"], deny_read=private_reads)
+        result.update(outcome=ran["outcome"], tokens=dict(ran["tokens"]),
+                      runner={"exit": ran["exit"], "seconds": ran["seconds"]})
+    except (PrepareFailed, runners.RunnerError) as e:
+        if isinstance(e, runners.SandboxRefused):
+            raise
+        result.update(outcome="aborted", problem=" ".join(str(e).split()))
+    finally:
+        try:
+            if result["outcome"] is not None:
+                copy_checks(suite, folder, result)
+        finally:
+            if workspace is not None:
+                if keep and result["outcome"] is not None:
+                    kept = os.path.join(folder, KEPT_NAME)
+                    shutil.move(workspace, kept)
+                    result["workspace"] = kept
+                else:
+                    remove_tree(workspace)
+    result["ended_at"] = evolve_core.now_iso()
+    evolve_core.write_json(os.path.join(folder, RESULT_NAME), result)
+    return result
