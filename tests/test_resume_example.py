@@ -1,5 +1,6 @@
 """The resume-tailoring example and the suite's 'home' setting (spec .regista/specs/resume-example.json: EX-1, EX-2,
-EX-6; EX-3 is the end-to-end test in genome/tests/e2e/test_resume_example.py).
+EX-6; EX-3 is the end-to-end test in genome/tests/e2e/test_resume_example.py), and the stricter claim check (spec
+.regista/specs/trace-claims-strict.json: EX-7, in TraceClaimsStrict).
 
 EX-1: genome/examples/resume-tailoring/checks/trace_claims.py runs the way the example's suite runs it: the test takes
 the command of the suite's command check that names trace_claims.py, puts the absolute path of a copy of the
@@ -119,12 +120,36 @@ def trace_command():
     raise AssertionError("no command check in the example's suite runs {checks}/trace_claims.py")
 
 
-class TraceClaims(unittest.TestCase):
-    """EX-1: trace_claims.py, run the way the suite's command check runs it."""
+def prompt_text(case):
+    if case.get("prompt") is not None:
+        return case["prompt"]
+    with open(os.path.join(EXAMPLE, *case["prompt_file"].split("/")), encoding="utf-8") as f:
+        return f.read()
+
+
+def case_folder(case):
+    """The application folder a case's prompt names (applications/<date>_<company>_<role>/)."""
+    m = re.search(r"applications/([^/\s]+)", prompt_text(case))
+    if not m:
+        raise AssertionError(f"case {case.get('id')!r}'s prompt names no applications/<folder>")
+    return m.group(1).rstrip(".")
+
+
+def trace_case_folder():
+    """The application folder of the first case whose command check runs trace_claims.py (EX-7: the check reads it)."""
+    for case in read_json(SUITE).get("cases") or []:
+        if [c for c in case.get("checks") or [] if isinstance(c.get("run"), str) and "trace_claims.py" in c["run"]]:
+            return case_folder(case)
+    raise AssertionError("no case in the example's suite runs trace_claims.py")
+
+
+class TraceBase(unittest.TestCase):
+    """trace_claims.py, run the way the suite's command check runs it, on hand-made workspaces (no tests here)."""
 
     def setUp(self):
         self.assertTrue(os.path.isfile(TRACE), f"{TRACE} doesn't exist")
         self.command, self.pass_exit = trace_command()
+        self.folder = trace_case_folder()  # the case's own application folder, which its command check passes
         self.tmp = tempfile.mkdtemp(prefix="genome-trace-claims-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.checks = os.path.join(self.tmp, "run", "checks")
@@ -135,7 +160,8 @@ class TraceClaims(unittest.TestCase):
 
     def workspace(self, resumes=None, cover=None, bank=BANK):
         """A fresh workspace; resumes maps an application folder name to the resume's text (None: no resume.md).
-        Folders are made in the order given, each one newer than the one before (by name and by time)."""
+        Folders are made in the order given, each one newer than the one before (by time). The cover letter goes in
+        the case's own folder when it is one of them, otherwise in the last one."""
         self.count += 1
         ws = os.path.join(self.tmp, f"ws-{self.count}")
         artemis = os.path.join(ws, *ARTEMIS.split("/"))
@@ -143,21 +169,24 @@ class TraceClaims(unittest.TestCase):
         write(os.path.join(artemis, "cvs", "README.md"), "The approved CVs, newest last.\n")
         write(os.path.join(artemis, "cvs", "2025-06-01_dana_ilescu.md"), resume())
         stamp = 1_700_000_000
+        names = list(resumes or {})
+        cover_in = self.folder if self.folder in names else (names[-1] if names else None)
         for i, (folder, text) in enumerate((resumes or {}).items()):
             app = os.path.join(artemis, "applications", folder)
             os.makedirs(app, exist_ok=True)
             write(os.path.join(app, "fit.md"), "Fit notes for a made-up role.\n")
             if text is not None:
                 write(os.path.join(app, "resume.md"), text)
-            if cover is not None and i == len(resumes) - 1:
+            if cover is not None and folder == cover_in:
                 write(os.path.join(app, "cover.md"), cover)
             for name in os.listdir(app):
                 os.utime(os.path.join(app, name), (stamp + i * 86400, stamp + i * 86400))
             os.utime(app, (stamp + i * 86400, stamp + i * 86400))
         return ws
 
-    def one(self, text, cover=None):
-        return self.workspace({"2026-10-15_bluewater-pay_head-of-engineering": text}, cover=cover)
+    def one(self, text, cover=None, bank=BANK):
+        """A workspace with one resume (and maybe a cover letter) in the case's own application folder."""
+        return self.workspace({self.folder: text}, cover=cover, bank=bank)
 
     def run_trace(self, ws):
         cmd = self.command.replace("{checks}", shlex.quote(self.checks))
@@ -183,6 +212,10 @@ class TraceClaims(unittest.TestCase):
             self.assertTrue([line for line in lines if pattern.search(line)],
                             f"no line names {pattern.pattern!r}:\n{out}")
         return lines
+
+
+class TraceClaims(TraceBase):
+    """EX-1: trace_claims.py, run the way the suite's command check runs it."""
 
     def test_a_resume_whose_every_claim_traces_passes(self):  # covers: EX-1
         self.assert_passes(self.one(resume()))
@@ -233,18 +266,19 @@ class TraceClaims(unittest.TestCase):
     def test_no_resume_fails(self):  # covers: EX-1
         variants = (("no applications folder", self.workspace()),
                     ("an application folder without resume.md",
-                     self.workspace({"2026-10-15_bluewater-pay_head-of-engineering": None})))
+                     self.workspace({self.folder: None})))
         for label, ws in variants:
             with self.subTest(label):
                 self.assert_fails_naming(ws, re.compile(r"resume", re.I))
 
-    def test_the_newest_of_two_resumes_is_checked(self):  # covers: EX-1
+    def test_the_resume_in_the_cases_own_folder_is_checked(self):  # covers: EX-1
+        # EX-7 changed this from 'the newest resume': the check reads the folder the case's command check passes.
         bad = resume(release="- Cut release time by 58% this year.")
-        old, new = "2026-09-01_old-company_engineering-manager", "2026-10-20_new-company_head-of-engineering"
-        with self.subTest("old bad, newest good"):
-            self.assert_passes(self.workspace({old: bad, new: resume()}))
-        with self.subTest("old good, newest bad"):
-            self.assert_fails_naming(self.workspace({old: resume(), new: bad}), "58")
+        other = "2026-09-01_old-company_engineering-manager"
+        with self.subTest("an older folder bad, the case's folder good"):
+            self.assert_passes(self.workspace({other: bad, self.folder: resume()}))
+        with self.subTest("an older folder good, the case's folder bad"):
+            self.assert_fails_naming(self.workspace({other: resume(), self.folder: bad}), "58")
 
     def test_one_plain_line_per_problem(self):  # covers: EX-1
         ws = self.one(resume(release="- Cut release time by 58% this year.", extra="- Shipped a ledger. [VERIFY]\n"))
@@ -266,6 +300,139 @@ class TraceClaims(unittest.TestCase):
                 imported.add((node.module or "").split(".")[0])
         outside = sorted(m for m in imported if m not in sys.stdlib_module_names)
         self.assertEqual(outside, [], "trace_claims.py imports only the standard library")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# EX-7: the stricter claim check (spec .regista/specs/trace-claims-strict.json). Same workspaces and command as EX-1;
+# the command is the suite's own, which now passes the case's application folder.
+
+DECOY = "2099-01-01_decoy-labs_head-of-engineering"  # dated after every case's folder
+BULLET_35 = "- Led 35 engineers across three teams."
+SUMMARY_20 = "Engineering leader with 20 years of experience at Northwind Ledger and Copperline Games."
+
+
+def bank_with(*lines, under=HEAD_NORTHWIND.lstrip("# ")):
+    """BANK with extra bullet lines added under one experience heading."""
+    head = f"### {under}\n"
+    assert head in BANK
+    return BANK.replace(head, head + "".join(line + "\n" for line in lines))
+
+
+TRACED_COVER = ("Dear hiring team,\n\nI would like to lead the payments engineers here. At Northwind Ledger I cut "
+                "release time by 40% and moved 250k customer accounts to the new ledger; at Copperline Games I hired "
+                "7 engineers in one year, where other teams took longer.\n\nDana Ilescu\n")
+
+
+class TraceClaimsStrict(TraceBase):
+    """EX-7: the check reads only the case's folder, traces numbers with their unit, ignores unconfirmed fact bank
+    lines, fails third-person pronouns of any gender, checks employers at every heading level and in bullets, and
+    traces the cover letter like the resume."""
+
+    def test_every_case_passes_its_own_application_folder(self):  # covers: EX-7
+        for case in read_json(SUITE).get("cases") or []:
+            with self.subTest(case=case.get("id")):
+                runs_trace = [c["run"] for c in case.get("checks") or []
+                              if isinstance(c.get("run"), str) and "trace_claims.py" in c["run"]]
+                self.assertTrue(runs_trace, "the case runs trace_claims.py")
+                folder = case_folder(case)
+                for run in runs_trace:
+                    self.assertIn(f"applications/{folder}", run,
+                                  "the command check passes the application folder the case's prompt names")
+
+    def test_a_clean_resume_elsewhere_does_not_hide_the_cases_own(self):  # covers: EX-7
+        made_up = resume(release="- Cut release time by 58% this year.")
+        with self.subTest("a clean decoy dated later; the case's own resume has a made-up number"):
+            self.assert_fails_naming(self.workspace({self.folder: made_up, DECOY: resume()}), "58")
+        with self.subTest("a resume only in another folder: the case's resume is missing"):
+            self.assert_fails_naming(self.workspace({DECOY: resume(), self.folder: None}), re.compile(r"resume", re.I))
+        with self.subTest("a resume only in another folder, and no folder for the case at all"):
+            self.assert_fails_naming(self.workspace({DECOY: resume()}), re.compile(r"resume", re.I))
+
+    def test_a_number_traces_only_with_its_unit_or_following_word(self):  # covers: EX-7
+        with self.subTest("'35 engineers' when the fact bank has only 35%"):
+            bank = bank_with("- Cut cloud costs by 35%.")
+            self.assert_fails_naming(self.one(resume(extra=BULLET_35 + "\n"), bank=bank), "35")
+        with self.subTest("35% when the fact bank has only '35 engineers'"):
+            bank = bank_with("- Grew the platform group to 35 engineers.")
+            self.assert_fails_naming(self.one(resume(extra="- Cut cloud costs by 35%.\n"), bank=bank), "35")
+        with self.subTest("'35 engineers' when the fact bank says '35 engineers'"):
+            bank = bank_with("- Grew the platform group to 35 engineers.")
+            self.assert_passes(self.one(resume(extra=BULLET_35 + "\n"), bank=bank))
+
+    def test_a_number_only_on_an_unconfirmed_fact_bank_line_does_not_trace(self):  # covers: EX-7
+        for marker in ("[VERIFY]", "[GAP]", "[CONF]"):
+            with self.subTest(marker):
+                bank = bank_with(f"- 20 years of experience leading engineering teams. {marker}")
+                self.assert_fails_naming(self.one(resume(summary=SUMMARY_20), bank=bank), "20")
+        with self.subTest("the same line without a marker traces"):
+            bank = bank_with("- 20 years of experience leading engineering teams.")
+            self.assert_passes(self.one(resume(summary=SUMMARY_20), bank=bank))
+
+    def test_numbers_written_as_words_are_traced(self):  # covers: EX-7
+        bullet = "- Grew the platform group to forty engineers.\n"
+        with self.subTest("'forty engineers' when the fact bank has 40% but no 40 engineers"):
+            self.assert_fails_naming(self.one(resume(extra=bullet)), re.compile(r"forty|40", re.I))
+        with self.subTest("'forty engineers' when the fact bank says '40 engineers'"):
+            bank = bank_with("- Grew the platform group to 40 engineers.")
+            self.assert_passes(self.one(resume(extra=bullet), bank=bank))
+
+    def test_she_her_and_hers_fail_in_any_case_in_the_resume_and_the_cover_letter(self):  # covers: EX-7
+        in_resume = {"she": "Colleagues say She ships early and often.",
+                     "her": "Engineering leader who grew HER teams at Northwind Ledger.",
+                     "hers": "The ledger at Northwind Ledger was hers to run.",
+                     "him": "Copperline Games asked HIM to lead the main title."}
+        for word, summary in in_resume.items():
+            with self.subTest("resume.md", word=word):
+                self.assert_fails_naming(self.one(resume(summary=summary)), re.compile(rf"\b{word}\b", re.I))
+        in_cover = {"she": "Dear team,\n\nSHE would like to lead your payments engineers.\n",
+                    "her": "Dear team,\n\nThe work shows in Her record at Northwind Ledger.\n",
+                    "hers": "Dear team,\n\nThe ledger at Northwind Ledger was Hers to run.\n"}
+        for word, cover in in_cover.items():
+            with self.subTest("cover.md", word=word):
+                self.assert_fails_naming(self.one(resume(), cover=cover), re.compile(rf"\b{word}\b", re.I))
+
+    def test_an_unknown_employer_fails_at_every_heading_level_and_in_lines(self):  # covers: EX-7
+        foreign = "Head of Engineering | Bluefjord Analytics | 2022 – 2025"
+        variants = {"## heading": f"## {foreign}", "#### heading": f"#### {foreign}", "plain line": foreign,
+                    "bullet": None}
+        for label, northwind in variants.items():
+            with self.subTest(label):
+                if northwind is None:
+                    text = resume(extra="- Advised Bluefjord Analytics on its payments ledger.\n")
+                else:
+                    text = resume(northwind=northwind)
+                self.assert_fails_naming(self.one(text), "Bluefjord Analytics")
+
+    def test_a_heading_mixing_two_jobs_fails_at_every_level(self):  # covers: EX-7
+        # A real title (Northwind's) with another job's employer and dates (Copperline's): each part is in the
+        # fact bank, but not together on one heading.
+        for level in ("#", "##", "###", "####"):
+            with self.subTest(level=level):
+                text = resume(extra=f"\n{level} Head of Engineering | Copperline Games | 2019 – 2022\n")
+                self.assert_fails_naming(self.one(text), "Head of Engineering")
+        with self.subTest("a real title and employer with another job's dates, at ##"):
+            text = resume(northwind="## Head of Engineering | Northwind Ledger | 2019 – 2022")
+            self.assert_fails_naming(self.one(text), re.compile(r"2019.*2022"))
+
+    def test_the_cover_letter_is_traced_like_the_resume(self):  # covers: EX-7
+        covers = {"a made-up number": ("Dear team,\n\nAt Northwind Ledger I led 58 engineers.\n", "58"),
+                  "a made-up employer": ("Dear team,\n\nAt Bluefjord Analytics I built the payments ledger.\n",
+                                         "Bluefjord Analytics"),
+                  "a number with the wrong unit": ("Dear team,\n\nAt Northwind Ledger I led 40 engineers.\n", "40"),
+                  "a leftover marker": ("Dear team,\n\nAt Northwind Ledger I cut release time by 40%. [VERIFY]\n",
+                                        "[VERIFY]")}
+        for label, (cover, name) in covers.items():
+            with self.subTest(label):
+                self.assert_fails_naming(self.one(resume(), cover=cover), name)
+
+    def test_a_fully_traced_resume_and_cover_letter_still_pass(self):  # covers: EX-7
+        self.assert_passes(self.one(resume(), cover=TRACED_COVER))
+        with self.subTest("with unconfirmed fact bank lines the resume doesn't use"):
+            bank = bank_with("- 20 years of experience leading engineering teams. [VERIFY]", "- Cut cloud costs by 35%.")
+            self.assert_passes(self.one(resume(), cover=TRACED_COVER, bank=bank))
+        with self.subTest("with a later-dated decoy folder holding a made-up resume"):
+            decoy = resume(release="- Cut release time by 58% this year.")
+            self.assert_passes(self.workspace({self.folder: resume(), DECOY: decoy}, cover=TRACED_COVER))
 
 
 # ---------------------------------------------------------------------------------------------------------------

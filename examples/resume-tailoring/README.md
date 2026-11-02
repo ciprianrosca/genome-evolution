@@ -15,7 +15,8 @@ When asked `artemis tailor <job description>`, the skill reads the job descripti
 sometimes a cover letter in `applications/<date>_<company>_<role>/`, starting from the latest approved CV in
 `cvs/`, and renders the resume with `tools/render_resume.py`. Its core rule is that every claim on a resume traces
 to a line in the fact bank, `profile/master_cv.md`. It must also leave no review markers behind (`[GAP]`,
-`[VERIFY]`, `[CONF]`, `{{` placeholders or `**` bold markup) and never call its owner "he", "his" or "him".
+`[VERIFY]`, `[CONF]`, `{{` placeholders or `**` bold markup) and speak in the first person, never calling its owner
+"he", "she", "his", "her" and so on.
 
 A script can decide almost all of that, so the suite relies on a script rather than a model's opinion. A model (the
 judge) is asked only one thing no script can decide: whether the summary speaks in the first person and fits the
@@ -54,30 +55,58 @@ Put this application in ~/personal-assistants/artemis/applications/2026-10-15_bl
 | `payments-lead` | training | A head of payments engineering role that matches Dana's experience well. The only case with a judge, which reads the resume's summary next to the job description (rubric in `rubrics/summary.md`). |
 | `games-manager` | training | A games backend manager role, which should lead with her years at Copperline Games. |
 | `stretch-role` | training | A VP role asking for much more than the fact bank holds (15 years as a director, 80 engineers, Go, a certification). The resume must not stretch to meet it; gaps belong in the fit note, which must exist. |
-| `with-cover-letter` | held out | A role that asks for a cover letter too; the letter is checked for markers and pronouns as well. |
+| `with-cover-letter` | held out | A role that asks for a cover letter too; the letter's claims are traced like the resume's. |
 | `one-page-director` | held out | A director role asking for a one-page resume, where the temptation is to merge or reword jobs. |
 
 The two held-out cases are never shown to the rewrites; the winner is chosen on them alone.
 
 ## What the check enforces
 
-`checks/trace_claims.py` reads the fact bank and the newest `applications/*/resume.md` (by the date its folder name
-starts with, then by when it last changed), with the `cover.md` next to it if there is one. It fails, printing one
-plain line per problem, when:
+Each case's command check runs `checks/trace_claims.py` with the application folder its prompt names, for example
+`applications/2026-10-15_bluewater-pay_head-of-engineering`. The script reads the fact bank and, in that folder only,
+`resume.md` and `cover.md` if there is one. A resume anywhere else doesn't count, and a missing one fails. Lines of the
+fact bank marked `[GAP]`, `[VERIFY]` or `[CONF]` are unconfirmed, so nothing traces to them.
 
-- a number on the resume (such as 35%, 12+, 250k or 99.6) isn't a number in the fact bank;
-- an experience heading, written `### <title> | <employer> | <start> – <end>`, names a job title, an employer or a
-  date range that no fact bank heading has, or puts a title, employer and dates together in a way no heading does;
-- a `[GAP]`, `[VERIFY]` or `[CONF]` marker, a `{{` placeholder or `**` bold markup is left in the resume or the cover
-  letter;
-- "he", "his" or "him" appears as a word in the resume or the cover letter;
-- there is no resume at all.
+It fails, printing one plain line per problem, when the resume or the cover letter:
 
-It passes when every claim traces. Each case also has a file check that looks for the markers and pronouns
-directly, so a failure's evidence says exactly what was left behind. Run it by hand on a folder like Artemis's:
+- has a number the fact bank doesn't hold with the same unit. 35% traces only to 35%, 12+ only to 12+ (not to 12),
+  250k only to 250k. A bare number traces only to the same number followed by the same word: "35 engineers" needs
+  "35 engineers" in the fact bank, and 35% elsewhere doesn't help. Numbers written as words (one to twenty, the tens
+  up to ninety, and pairs such as forty-two) are read as numbers, and "percent" as %. A year traces to the same year
+  anywhere in the fact bank, and a full date such as "2 November 2026" isn't checked;
+- has an experience heading at any level (`#` to `####`), or a plain line or bullet written the same way
+  (`<title> | <employer> | <start> – <end>`), whose title, employer and date range don't appear together on one
+  experience heading of the fact bank. A heading with a year in it that is written another way fails unless the
+  fact bank has the same line;
+- names, in any other line, an employer the fact bank doesn't hold. The cover letter may also name the company the
+  application is for, taken from the folder's name (`<date>_<company>_<role>`), and nothing else;
+- has a `[GAP]`, `[VERIFY]` or `[CONF]` marker, a `{{` placeholder or `**` bold markup left in;
+- uses he, his, him, himself, she, her, hers or herself as a word, in any case;
+- doesn't exist (the resume), or the fact bank doesn't.
+
+Spotting an employer in running text is a heuristic, not a parser. A name counts as an employer when it is two or
+more capitalised words ending in a company word (Analytics, Bank, Games, Labs, Ledger, Pay, Systems, Software,
+Group, Inc, Ltd, GmbH, SRL and others; the list is `EMPLOYER_WORDS` in the script), or capitalised words right after
+"at", "for" or "with", at least as many as the fact bank's shortest employer name. Such a name passes when it is one
+of the fact bank's employers or appears word for word on a confirmed line of the fact bank.
+
+What the check can't see:
+
+- a claim with no number, employer, title or date in it: "I led the payments migration" passes whether or not the
+  fact bank says so. Only the judge, in one case, reads the summary's meaning;
+- an employer written in a way the heuristic misses: one word after "at" ("at Acme"), or a name without a company
+  word that doesn't follow "at", "for" or "with";
+- a number reused with the same unit or word but about something else: "Hired 14 engineers" passes because the fact
+  bank says "Led 14 engineers";
+- a claim stretched in wording but not in figures, such as "led" where the fact bank says "helped".
+
+The heuristic can also fail a phrase that isn't an employer: "Built Payment Systems" is read as one unless the fact
+bank has the words "payment systems" somewhere. Each case also has a file check that looks for the markers and pronouns directly, so a
+failure's evidence says exactly what was left behind. Run it by hand on a folder like Artemis's (without the second
+argument it checks the newest application):
 
 ```sh
-python3 genome/examples/resume-tailoring/checks/trace_claims.py ~/personal-assistants/artemis
+python3 genome/examples/resume-tailoring/checks/trace_claims.py ~/personal-assistants/artemis applications/<folder>
 ```
 
 ## Running it on your own copy of the skill

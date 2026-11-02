@@ -23,7 +23,7 @@
       "checks": [
         {
           "id": "claims-trace",
-          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis applications/2026-10-15_bluewater-pay_head-of-engineering"
         },
         {
           "id": "no-leftover-markers",
@@ -36,7 +36,7 @@
             "{{",
             "**"
           ],
-          "not_matches": "(?i)\\b(he|his|him)\\b"
+          "not_matches": "(?i)\\b(he|his|him|himself|she|her|hers|herself)\\b"
         },
         {
           "id": "summary-fits",
@@ -66,7 +66,7 @@
       "checks": [
         {
           "id": "claims-trace",
-          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis applications/2026-10-16_lanternfish-studios_engineering-manager"
         },
         {
           "id": "no-leftover-markers",
@@ -79,7 +79,7 @@
             "{{",
             "**"
           ],
-          "not_matches": "(?i)\\b(he|his|him)\\b"
+          "not_matches": "(?i)\\b(he|his|him|himself|she|her|hers|herself)\\b"
         }
       ]
     },
@@ -100,7 +100,7 @@
       "checks": [
         {
           "id": "claims-trace",
-          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis applications/2026-10-19_orbitgrid_vp-engineering"
         },
         {
           "id": "no-leftover-markers",
@@ -113,7 +113,7 @@
             "{{",
             "**"
           ],
-          "not_matches": "(?i)\\b(he|his|him)\\b"
+          "not_matches": "(?i)\\b(he|his|him|himself|she|her|hers|herself)\\b"
         },
         {
           "id": "fit-note-written",
@@ -139,7 +139,7 @@
       "checks": [
         {
           "id": "claims-trace",
-          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis applications/2026-10-21_tidewell-health_engineering-manager"
         },
         {
           "id": "no-leftover-markers",
@@ -152,7 +152,7 @@
             "{{",
             "**"
           ],
-          "not_matches": "(?i)\\b(he|his|him)\\b"
+          "not_matches": "(?i)\\b(he|his|him|himself|she|her|hers|herself)\\b"
         },
         {
           "id": "cover-no-leftover-markers",
@@ -165,7 +165,7 @@
             "{{",
             "**"
           ],
-          "not_matches": "(?i)\\b(he|his|him)\\b"
+          "not_matches": "(?i)\\b(he|his|him|himself|she|her|hers|herself)\\b"
         }
       ]
     },
@@ -186,7 +186,7 @@
       "checks": [
         {
           "id": "claims-trace",
-          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis applications/2026-10-22_kestrel-freight_engineering-director"
         },
         {
           "id": "no-leftover-markers",
@@ -199,7 +199,7 @@
             "{{",
             "**"
           ],
-          "not_matches": "(?i)\\b(he|his|him)\\b"
+          "not_matches": "(?i)\\b(he|his|him|himself|she|her|hers|herself)\\b"
         }
       ]
     }
