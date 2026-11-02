@@ -67,6 +67,9 @@ TOKEN_SUFFIXES = ("_TOKEN", "_API_KEY", "_SECRET", "_SECRET_KEY", "_ACCESS_KEY",
 # nothing. CLAUDE_FILES, the Claude Code ones, are denied under CLAUDE_CONFIG_DIR too when it is set.
 CLAUDE_FILES = ("projects", "file-history", ".credentials.json")
 HOME_SECRETS = tuple(f".claude/{name}" for name in CLAUDE_FILES) + (".ssh", ".aws", ".config/gh", ".gnupg", ".netrc")
+# The host's project settings files, which would load in Claude Code from a workspace (hooks running outside the
+# sandbox, sandbox lists merged): never left in a workspace, whichever runner runs (workspace_files_to_remove).
+HOST_WORKSPACE_FILES = (".claude/settings.json", ".claude/settings.local.json")
 # Variables pointing at local sockets that lead out of the sandbox (the desktop session bus, the SSH agent): never
 # passed to the default runner.
 SOCKET_NAMES = frozenset({"DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK"})
@@ -118,6 +121,15 @@ def require_sandbox(config):
     if not isinstance(value, bool):
         raise EvolveError("require_sandbox in evolve.json must be true or false.")
     return value
+
+
+# ---------------------------------------------------------------- the workspace
+
+def workspace_files_to_remove():
+    """The workspace paths (relative, with /) of the host's own settings files, which a fixture or an individual must
+    never leave in a workspace: suite.py removes them after copying both in, before any runner starts. The same for
+    every runner (a template runner may start Claude Code too)."""
+    return HOST_WORKSPACE_FILES
 
 
 # ---------------------------------------------------------------- the environment

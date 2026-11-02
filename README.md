@@ -208,3 +208,7 @@ base and up to three of the best children on the held-out cases to pick a winner
 A generation continues only with the same `--light` and `--red-team` settings it started with; any other
 setting is refused before anything runs. `evolve.py report <g>` writes the generation's report, and `evolve.py
 promote <genome> --generation <g>` turns a finished generation's winner into a pull request; it never merges.
+For a target that lives in a subfolder of a repository, such as a skill folder in a repository of assistants, add
+`--profile <profile> --source <folder>`: the winner's files go to their paths under that folder, the report of a
+suite generation goes to `evolve-reports/<g>.md` at the repository's top, and the repository is the one holding the
+folder (or `--repo <checkout>`, which must hold it).

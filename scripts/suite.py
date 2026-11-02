@@ -51,7 +51,6 @@ import runners  # noqa: E402
 DEFAULT_RUNNER = runners.DEFAULT_RUNNER  # the default runner's name (runners.py runs it)
 TOKEN_READERS = ("none", "claude-json")  # how a custom runner's output tells its tokens: not at all, or as JSON
 PLACEHOLDERS = ("workspace", "individual", "prompt_file", "prompt", "model")  # what a runner template may use
-PROJECT_SETTINGS = (".claude/settings.json", ".claude/settings.local.json")  # never left in a workspace
 CHECKS_PLACEHOLDER = "{checks}"  # in a command check: the folder the suite's check scripts are copied to
 
 TOP_KEYS = ("name", "describe", "install", "runner", "model", "timeout_minutes", "holdout_pct", "screen_cases",
@@ -696,8 +695,8 @@ def frozen_change(workspace, frozen):
 
 def prepare_workspace(suite, case, individual, workspace):
     """Copy the case's fixtures into the workspace, then the individual's files at the install path, then remove
-    the project settings files either brought (PROJECT_SETTINGS); return the frozen fixtures' hashes. Raises
-    PrepareFailed with a plain sentence."""
+    the host's project settings files either brought (runners.workspace_files_to_remove); return the frozen
+    fixtures' hashes. Raises PrepareFailed with a plain sentence."""
     root = suite["root"]
     for dest, src in case["files"].items():
         source = os.path.join(root, src)
@@ -790,11 +789,11 @@ def dotgit_walk(folder):
 
 
 def remove_project_settings(workspace):
-    """Remove .claude/settings.json and .claude/settings.local.json from the workspace: settings a fixture or the
-    individual brought would load in Claude Code (hooks running outside the sandbox, sandbox lists merged). Returns
-    the workspace paths removed."""
+    """Remove the host's project settings files (runners.workspace_files_to_remove) from the workspace: settings a
+    fixture or the individual brought would load in the runner's agent (hooks running outside the sandbox, sandbox
+    lists merged). Returns the workspace paths removed."""
     removed = []
-    for name in PROJECT_SETTINGS:
+    for name in runners.workspace_files_to_remove():
         path = os.path.join(workspace, *name.split("/"))
         if os.path.lexists(path):
             try:
@@ -1106,7 +1105,8 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
     its suite file, checks_dir, prompt, rubric and fixture files one by one), the individual and the run folder are
     always denied, and so are the git directories of a repository holding the suite file (its history holds the
     check scripts); a run whose private paths can't all be denied is aborted with a problem sentence. The
-    workspace never holds .claude/settings.json or .claude/settings.local.json (removed after the copy). A check
+    workspace never holds the host's project settings files (runners.workspace_files_to_remove; removed after the
+    copy). A check
     scripts copy that fails gives the outcome aborted with a problem sentence (the workspace is
     still removed). The default runner refused for a missing sandbox raises (runners.SandboxRefused) before
     anything is written; so does a case the suite doesn't have, or a run folder overlapping the suite's folder or

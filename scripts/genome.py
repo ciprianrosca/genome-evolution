@@ -42,7 +42,9 @@ unchanged. Globs are anchored at the source folder: `*` and `?` stay inside one 
 number of folders (none included), and `<folder>/**` covers the folder itself and everything under it.
 
 Storage, under the evolver's working folder (`home` below):
-  genomes/<id>/genome.json    id, profile, parents, base, the evolvable files' paths, sizes and hashes, traits
+  genomes/<id>/genome.json    id, profile, parents, base, the evolvable files' paths, sizes and hashes, traits;
+                              base is the source's target_version, its git commit and (in a git working tree)
+                              path, its folder from the tree's top ('.' at the top); children inherit it
   genomes/<id>/sources.json   where each trait held in the genome's own files is read (no bounds), so loading a
                               genome can check that genome.json and those files agree
   genomes/<id>/limits.json    the profile's never globs and caps when the genome was made (never its bounds), so
@@ -900,20 +902,35 @@ def target_version(profile, source):
     return json_value(source, spec["file"], spec["key"], f"The profile {profile['name']}'s version")
 
 
-def source_commit(source):
-    """The source folder's git HEAD when the folder is the top of a git working tree, else None."""
+def source_place(source):
+    """(commit, path) of the source folder in the git working tree holding it (its top, or a subfolder of it, such as
+    a skill folder in a repository of assistants): commit is the tree's HEAD (None without one), path the source's
+    path relative to the tree's top, with / and '.' for the top itself. (None, None) when the source isn't in a git
+    working tree. Promote compares a genome's files with this commit at their paths under the source folder, and
+    refuses a --source whose path differs from this one, so a subfolder's genome is promoted as safely as a top
+    folder's."""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     try:
         top = subprocess.run(["git", "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], cwd=source,
                              capture_output=True, text=True, env=env, timeout=30)
-        if top.returncode != 0 or not top.stdout.strip() or not os.path.samefile(top.stdout.strip(), source):
-            return None  # not a git working tree, or a folder inside one: its HEAD isn't the source's own
+        if top.returncode != 0 or not top.stdout.strip():
+            return None, None  # not in a git working tree
         head = subprocess.run(["git", "-c", "core.fsmonitor=false", "rev-parse", "--verify", "-q", "HEAD"],
                               cwd=source, capture_output=True, text=True, env=env, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, None
+    rel = os.path.relpath(os.path.realpath(source), os.path.realpath(top.stdout.strip()))
+    if rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
+        path = None  # git's top doesn't hold the folder (it can't happen in a working tree; never guess a path)
+    else:
+        path = "." if rel == "." else rel.replace(os.sep, "/")
     commit = head.stdout.strip()
-    return commit if head.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", commit) else None
+    return (commit if head.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", commit) else None), path
+
+
+def source_commit(source):
+    """The git HEAD of the working tree holding the source folder, else None (see source_place)."""
+    return source_place(source)[0]
 
 
 # ---------------------------------------------------------------- storage
@@ -956,8 +973,11 @@ def seed(home, profile, source, genome_id):
             contents[rel] = read_bytes(os.path.join(source, *rel.split("/")))
         except OSError as e:
             raise GenomeError(f"Can't read {rel} in {source}: {e.strerror or e}.")
-    genome = new_genome(genome_id, profile, [], {"target_version": version, "commit": source_commit(source)},
-                        contents, traits)
+    commit, path = source_place(source)
+    base = {"target_version": version, "commit": commit}
+    if path is not None:
+        base["path"] = path  # the source's folder in its repository: promote refuses any other --source
+    genome = new_genome(genome_id, profile, [], base, contents, traits)
     modes = {rel: os.path.join(source, *rel.split("/")) for rel in contents}
     return store_genome(home, profile, source, genome, contents, modes, "seeded")
 

@@ -1483,9 +1483,10 @@ def promote_env(network=False, hidden=()):
     return env
 
 
-def promote_git(repo, *args, network=False, hidden=()):
+def promote_git(repo, *args, network=False, hidden=(), raw=False):
     """Run one git command for promote in repo (found through PATH) and return the CompletedProcess. Only the push
-    passes network=True; every other call may not fetch anything."""
+    passes network=True; every other call may not fetch anything. raw=True keeps the output as bytes (a blob's
+    exact content)."""
     config = PROMOTE_GIT_CONFIG + (() if network else ("protocol.allow=never",))
     cmd = ["git", "--no-optional-locks"]
     for setting in config:
@@ -1494,6 +1495,8 @@ def promote_git(repo, *args, network=False, hidden=()):
     env = promote_env(network, hidden)
     env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
+        if raw:
+            return subprocess.run(cmd, capture_output=True, env=env, stdin=subprocess.DEVNULL)
         return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
                               stdin=subprocess.DEVNULL)
     except OSError as e:
@@ -1714,18 +1717,149 @@ def write_text(path, text):
 
 def report_path_problem(rel):
     """Why rel can't be the report's path inside the target's repository, or None: it must be a non-empty relative
-    path with no `..` part."""
+    path of a file, with no `..` or `.git` part, other than the repository's top folder ('.') or a folder (a path
+    ending with /)."""
     if not isinstance(rel, str):
         return "isn't a text path"
     if not rel.strip():
         return "is empty"
     if os.path.isabs(rel) or rel.startswith(("/", "\\")) or re.match(r"[A-Za-z]:[/\\]", rel):
         return "is absolute"
-    if any(part == ".." for part in re.split(r"[/\\]", rel)):
+    parts = re.split(r"[/\\]", rel)
+    if any(part == ".." for part in parts):
         return "has a `..` part, so it could point outside the repository"
     if "\0" in rel:
         return "holds a NUL character"
+    if all(part in ("", ".") for part in parts):
+        return "names the repository's top folder, not a file"
+    if rel.endswith(("/", "\\")):
+        return "names a folder (it ends with a slash), not a file"
+    if parts[-1] == ".":
+        return "names a folder (it ends with /.), not a file"
+    if any(part.strip().lower() == ".git" for part in parts):
+        return "has a `.git` part, so it would write into git's own files"
     return None
+
+
+def report_path_clash(rel, promoted):
+    """Why the report path rel clashes with one of the promoted files (repository paths), or None: rel is that file's
+    path (ignoring case and `.` parts, as a case-insensitive file system would), or one names a folder of the
+    other."""
+    def parts(path):
+        return [p.casefold() for p in re.split(r"[/\\]", path) if p not in ("", ".")]
+    mine = parts(rel)
+    for path in promoted:
+        theirs = parts(path)
+        if mine == theirs:
+            return f"is the path of the promoted file {path}, so the report would overwrite it"
+        shorter = min(len(mine), len(theirs))
+        if mine[:shorter] == theirs[:shorter]:
+            return (f"{'names a folder holding' if len(mine) < len(theirs) else 'lies under'} the promoted file "
+                    f"{path}, so the report and the file can't both be written")
+    return None
+
+
+def promote_source(repo, source, git):
+    """(the source folder's full path, its path relative to the repository's top with / and no trailing slash, '' at
+    the top) for promote: the folder a genome's file paths are relative to. source None is the repository's top;
+    otherwise it must be an existing folder inside the repository (repo, its top folder) and in no other git
+    repository nested in it, or it is refused with an EvolveError before anything is created."""
+    if source is None:
+        return repo, ""
+    shown = os.path.abspath(source)
+    if not os.path.isdir(shown):
+        raise EvolveError(f"The source folder {shown} doesn't exist, so its files have no place in {repo}; nothing "
+                          f"is promoted.")
+    real, top = os.path.realpath(shown), os.path.realpath(repo)
+    rel = os.path.relpath(real, top)
+    inside = rel == "." or not (rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel))
+    if not inside:
+        raise EvolveError(f"The source folder {shown} is outside the repository {repo}, so its files have no place "
+                          f"there; nothing is promoted. Promote into the repository that holds the source folder.")
+    rel = "" if rel == "." else rel.replace(os.sep, "/")
+    if any(part.lower() == ".git" for part in rel.split("/")):
+        raise EvolveError(f"The source folder {shown} lies in git's own files of {repo}, not in its working tree; "
+                          f"nothing is promoted.")
+    own = git(real, "rev-parse", "--show-toplevel")
+    own_top = own.stdout.strip() if own.returncode == 0 else ""
+    if own_top and os.path.realpath(own_top) != top:
+        raise EvolveError(f"The source folder {shown} isn't part of the repository {repo}: it belongs to another git "
+                          f"repository nested in it ({own_top}); nothing is promoted. Promote into that repository.")
+    return real, rel
+
+
+def root_seed(home, genome, stored, profile):
+    """(id, stored record) of genome's root seed: the ancestor with no parents, reached by following each genome's
+    first parent (the one whose base and files a child starts from), loaded with its integrity checked. A missing or
+    broken ancestor, or parents that loop, is refused with an EvolveError."""
+    current, record, seen = genome, stored, {genome}
+    while True:
+        parents = record.get("parents") or []
+        if not isinstance(parents, list):
+            raise EvolveError(f"The genome {current}'s parents aren't a list, so the seed {genome} descends from "
+                              f"can't be found; nothing is promoted.")
+        if not parents:
+            return current, record
+        parent = parents[0]
+        if not isinstance(parent, str) or not safe_name(parent) or parent in seen:
+            raise EvolveError(f"The genome {current} names a parent {parent!r} that isn't a stored genome or loops "
+                              f"back, so the seed {genome} descends from can't be found; nothing is promoted.")
+        seen.add(parent)
+        try:
+            record = genome_lib.load_genome(home, parent, profile)
+        except genome_lib.GenomeError as e:
+            raise EvolveError(f"{genome}'s ancestor {parent} fails its integrity check, so the folder {genome} was "
+                              f"seeded from can't be told; nothing is promoted: {e}")
+        current = parent
+
+
+def seeded_path_refusal(genome, stored, under, source_dir, repo):
+    """Refuse with an EvolveError when genome's base records the path of the folder it was seeded from (relative to
+    its repository's top, '.' for the top) and promote maps its files under another one. A genome seeded before seed
+    recorded the path has none, and relies on seeded_folder_refusal alone."""
+    recorded_base = stored.get("base") if isinstance(stored.get("base"), dict) else {}
+    if "path" not in recorded_base:
+        return
+    recorded = recorded_base["path"]
+    if not isinstance(recorded, str) or not recorded.strip():
+        raise EvolveError(f"{genome}'s base records the folder it was seeded from as {recorded!r}, which isn't a "
+                          f"path, so whether --source is that folder can't be told; nothing is promoted.")
+    wanted = recorded.strip().strip("/")
+    wanted = "" if wanted in ("", ".") else wanted
+    if wanted != under:
+        raise EvolveError(f"{genome} was seeded from {wanted or '.'} in its repository, but the source folder "
+                          f"{source_dir} is {under or '.'} in {repo}; the paths differ, so promoting there would put "
+                          f"its files where they don't belong. Nothing is promoted. Give --source the folder "
+                          f"{wanted or '.'} of that repository.")
+
+
+def seeded_folder_refusal(repo, root, root_stored, commit, under, source_dir, git):
+    """Refuse with an EvolveError unless the root seed root (whose files seed took from the source folder at its
+    recorded commit) holds exactly the files at <that commit>:<under>/<file> in repo, so the genome was seeded from
+    the folder promote maps its files under. commit is the promoted genome's base commit, used when the root seed
+    records none. The root seed, not the generation's base genome: a base that is itself an evolved genome differs
+    from the source in the files it changed."""
+    recorded = (root_stored.get("base") or {}).get("commit") if isinstance(root_stored.get("base"), dict) else None
+    seed_commit = recorded if isinstance(recorded, str) and COMMIT_HASH.fullmatch(recorded) else commit
+    where = f"{source_dir} ({under}/ in {repo})" if under else f"the top folder of {repo}"
+    differing = []
+    for entry in root_stored["files"]:
+        rel = entry["path"]
+        path = f"{under}/{rel}" if under else rel
+        blob = git(repo, "rev-parse", "--verify", "-q", f"{seed_commit}:{path}")
+        oid = blob.stdout.strip() if blob.returncode == 0 else ""
+        kind = git(repo, "cat-file", "-t", oid).stdout.strip() if oid else ""
+        shown = git(repo, "cat-file", "blob", oid, raw=True) if kind == "blob" else None
+        if shown is None or shown.returncode != 0:
+            differing.append(f"{path} (missing)")
+        elif genome_lib.sha256_bytes(shown.stdout) != entry["sha256"]:
+            differing.append(f"{path} (different text)")
+    if differing:
+        verb = "doesn't" if len(differing) == 1 else "don't"
+        raise EvolveError(f"The genome wasn't seeded from the source folder {where}: at the seed commit "
+                          f"{seed_commit[:12]}, {names_list(differing)} {verb} match the files of {root}, the seed "
+                          f"genome it descends from, so promoting there would put its files where they don't belong; "
+                          f"nothing is promoted. Give --source the folder the genome was seeded from.")
 
 
 def setting(value, config, profile):
@@ -1734,18 +1868,26 @@ def setting(value, config, profile):
 
 
 def promote(home, config, state, genome, adapter, profile, repo, onto=None, checks=None, remote=PROMOTE_REMOTE,
-            pr_command=PR_COMMAND, open_pr=True, prefix=PROMOTE_PREFIX):
+            pr_command=PR_COMMAND, open_pr=True, prefix=PROMOTE_PREFIX, source=None):
     """Put a generation's winner on its own branch of the target repository, run the checks there and open its pull
     request; returns 0. It works in a temporary worktree, pushes only its own branch and never merges.
 
     It is refused with an EvolveError before anything is created when the generation is a red-team one or genome
     descends from a red-team child, when genome isn't the finished generation's winner, fails its integrity check, or
-    its files have uncommitted changes in the repository or changed on onto since its base commit.
+    its files have uncommitted changes in the repository or changed on onto since its base commit, or when source isn't
+    the folder genome was seeded from (another path than its base's recorded one, or files that differ from its root
+    seed's at that seed's commit).
 
     - state: the generation's generation.json; adapter: the adapter it ran with (its words, report_path and
       hidden_variables); repo: a folder in the target's git repository; onto: the branch the pull request targets
       (None: the repository's current branch).
-    - profile: the target's profile, or a function of the repository's top folder that loads it.
+    - source: the target's source folder, the folder the genome's file paths are relative to (None: the repository's
+      top). It must lie inside the repository (refused before anything is created otherwise); each genome file goes
+      to <source relative to the repository's top>/<file> on the branch, and the report to the adapter's
+      report_path, relative to the repository's top. The report path is refused when it is empty, absolute, the top
+      folder, a folder, has a `..` or `.git` part, or clashes with a promoted file's path.
+    - profile: the target's profile, or a function of the source folder (the repository's top folder when source is
+      None) that loads it.
     - checks: the commands run in the worktree before anything is pushed (None: the profile's checks); remote: the
       git remote the branch is pushed to; pr_command: the pull-request command (a list, or a string as command_argv
       reads it), to which --base, --head, --title and --body-file are added. Each of these three may also be a
@@ -1797,7 +1939,8 @@ def promote(home, config, state, genome, adapter, profile, repo, onto=None, chec
     if top.returncode != 0 or not top.stdout.strip():
         raise EvolveError(f"{repo} isn't a git repository: {git_error(top)}")
     repo = top.stdout.strip()
-    profile = profile(repo) if callable(profile) else profile
+    source_dir, under = promote_source(repo, source, git)
+    profile = profile(source_dir) if callable(profile) else profile
     try:
         genome_lib.check_individual(home, genome, profile)
         stored = genome_lib.load_genome(home, genome, profile)
@@ -1808,15 +1951,22 @@ def promote(home, config, state, genome, adapter, profile, repo, onto=None, chec
     except genome_lib.GenomeError as e:
         raise EvolveError(f"The base genome {base} fails its integrity check, so the files {genome} changes can't be "
                           f"told: {e}")
+    seeded_path_refusal(genome, stored, under, source_dir, repo)
     mine = {e["path"]: e["sha256"] for e in stored["files"]}
     theirs = {e["path"]: e["sha256"] for e in base_stored["files"]}
     removed = sorted(set(theirs) - set(mine))
     if removed:
         raise EvolveError(f"{genome} lacks {names_list(removed)}, which the base {base} holds; promote writes changed "
                           f"files and never removes one.")
-    changed = sorted(p for p, digest in mine.items() if theirs.get(p) != digest)
-    if not changed:
+    changed_files = sorted(p for p, digest in mine.items() if theirs.get(p) != digest)
+    if not changed_files:
         raise EvolveError(f"{genome} holds the same files as the base {base}, so there is nothing to promote.")
+    # Each changed genome file's path in the repository: under the source folder's path from the repository's top.
+    mapped = {rel: f"{under}/{rel}" if under else rel for rel in changed_files}
+    changed = sorted(mapped.values())
+    clash = report_path_clash(report_rel, changed)
+    if clash:
+        raise EvolveError(f"The adapter's report path {report_rel!r} {clash}; nothing is promoted.")
 
     # The settings, before anything is created.
     checks = setting(checks, config, profile)
@@ -1846,6 +1996,8 @@ def promote(home, config, state, genome, adapter, profile, repo, onto=None, chec
     if git(repo, "cat-file", "-e", f"{commit}^{{commit}}").returncode != 0:
         raise EvolveError(f"The base commit of {genome}, {commit[:12]}, isn't in {repo}, so whether its files changed "
                           f"on {onto} since can't be told; fetch it first.")
+    root, root_stored = root_seed(home, genome, stored, profile)
+    seeded_folder_refusal(repo, root, root_stored, commit, under, source_dir, git)
     status = git_out(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", *literal(changed),
                      what="git status")
     dirty = sorted({entry[3:] for entry in status.split("\0") if len(entry) > 3 and entry[2] == " "} & set(changed))
@@ -1898,9 +2050,9 @@ def promote(home, config, state, genome, adapter, profile, repo, onto=None, chec
         if added.returncode != 0:
             raise EvolveError(f"git worktree add failed in {repo}: {git_error(added)}")
         created = True
-        for rel in changed:
-            write_into_tree(tree, rel, genome_lib.read_bytes(os.path.join(home, "genomes", genome, "files",
-                                                                          *rel.split("/"))))
+        for rel in changed_files:
+            write_into_tree(tree, mapped[rel], genome_lib.read_bytes(os.path.join(home, "genomes", genome, "files",
+                                                                                  *rel.split("/"))))
         write_into_tree(tree, report_rel, report.encode("utf-8"))
         git_out(tree, "add", "--", *literal(changed + [report_rel]), what="git add")
         git_out(tree, "commit", "--quiet", "--no-verify", "-m", message, what="git commit")

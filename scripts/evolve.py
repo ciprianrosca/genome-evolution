@@ -7461,17 +7461,27 @@ def cmd_promote(args, home, config):
     request (PROMO-1, PROMO-4), through evolve_core.promote: refused before anything is created when the generation
     is a red-team one or the genome descends from a red-team child (LOOP-7), when the genome isn't the finished
     generation's winner, fails its integrity check, or its files have uncommitted changes or changed on --onto since
-    its base commit. It works in a temporary worktree, pushes only its own branch and never merges."""
+    its base commit. It works in a temporary worktree, pushes only its own branch and never merges.
+
+    --source is the target's source folder, the one the genome was seeded from (SUI-9): when it is a subfolder of a
+    git repository, each genome file goes to its path under that subfolder. The repository is --repo (the source
+    must lie inside it), else the git repository holding --source; without --source it is --repo or the Regista
+    checkout, and the source is the repository's top. A suite generation's adapter is rebuilt from its suite file, so
+    its report goes to that adapter's report path."""
     gen_id, genome = args.generation, args.genome
     if not safe_name(genome) or genome == GENOME_CURRENT:
         raise EvolveError(f"{genome!r} isn't a stored genome's id, so it can't be promoted.")
+    source = os.path.abspath(args.source) if args.source is not None else None
+    if source is not None and not os.path.isdir(source):
+        raise EvolveError(f"The source folder {source} doesn't exist; name the folder the genome was seeded from "
+                          f"with --source.")
     state = read_generation(home, gen_id)
     adapter = adapter_for_state(home, config, state)
     return evolve_core.promote(
         home, config, state, genome, adapter,
-        profile=lambda repo: genome_lib.load_profile(args.profile, source=repo),
-        repo=args.repo or regista_checkout(config), onto=args.onto, checks=promote_checks, remote=promote_remote,
-        pr_command=pr_command, open_pr=not args.no_pr, prefix=PROMOTE_PREFIX)
+        profile=lambda folder: genome_lib.load_profile(args.profile, source=folder),
+        repo=args.repo or source or regista_checkout(config), onto=args.onto, checks=promote_checks,
+        remote=promote_remote, pr_command=pr_command, open_pr=not args.no_pr, prefix=PROMOTE_PREFIX, source=source)
 
 
 # ---------------------------------------------------------------- commands
@@ -7839,6 +7849,10 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="stop after the checks: keep the branch, push nothing and print the commands to run by hand")
     p.add_argument("--profile", default=DEFAULT_PROFILE, help="the target's profile (default: genome/profiles/regista.json)")
+    p.add_argument("--source", default=None,
+                   help="the folder the genome was seeded from, when it is a subfolder of the repository: its files "
+                        "go to their paths under it (default: the repository's top); without --repo, the "
+                        "repository is the one holding this folder")
     p.set_defaults(func=cmd_promote, check_first=refuse_unknown_adapter)
 
     suite = sub.add_parser("suite", help="check a suite file, or run one of its cases: the cases any set of text "

@@ -287,8 +287,9 @@ class RegistaSeed(GenomeFixture):
         self.assertEqual(genome.get("version"), 1)
         self.assertEqual(genome.get("profile"), profile_name, "genome.json names the profile it was seeded with")
         self.assertTrue(genome.get("created_at"), "genome.json records when it was created")
-        self.assertEqual(genome.get("base"), {"target_version": VERSION, "commit": self.head},
-                         "base: the source's .claude-plugin/plugin.json version and its HEAD commit")
+        self.assertEqual(genome.get("base"), {"target_version": VERSION, "commit": self.head, "path": "."},
+                         "base: the source's .claude-plugin/plugin.json version, its HEAD commit and its path in "
+                         "the repository ('.', the top)")
         self.assertEqual(genome.get("traits"), TRAITS,
                          "the four numbers from templates/config.json and the reviewer's model from its front matter")
 
