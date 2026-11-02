@@ -8,7 +8,8 @@ assertion (exists, contains, matches a regular expression) and a judge (a rubric
 
 Paths in a suite file are relative to the suite file's folder (suite-relative), except the paths inside a run's
 workspace (workspace-relative): the install folder, the fixtures' destinations, frozen globs, the file a file check
-reads and the files a judge reads.
+reads and the files a judge reads. A suite may name a home folder in the workspace (home): the runner then runs
+with HOME set to it, so a target that works in the user's home folder finds its fixtures there.
 
 load_suite reads and checks a suite file and returns it with every default filled in, plus its split: which cases
 train (the first screen_cases of them screen) and which are held out. The split is stable: a case's own split
@@ -53,10 +54,10 @@ TOKEN_READERS = ("none", "claude-json")  # how a custom runner's output tells it
 PLACEHOLDERS = ("workspace", "individual", "prompt_file", "prompt", "model")  # what a runner template may use
 CHECKS_PLACEHOLDER = "{checks}"  # in a command check: the folder the suite's check scripts are copied to
 
-TOP_KEYS = ("name", "describe", "install", "runner", "model", "timeout_minutes", "holdout_pct", "screen_cases",
-            "checks_dir", "sandbox", "cases")
+TOP_KEYS = ("name", "describe", "install", "home", "runner", "model", "timeout_minutes", "holdout_pct",
+            "screen_cases", "checks_dir", "sandbox", "cases")
 REQUIRED_TOP = ("name", "install", "cases")
-DEFAULTS = {"describe": None, "runner": DEFAULT_RUNNER, "model": "sonnet", "timeout_minutes": 15, "holdout_pct": 40,
+DEFAULTS = {"describe": None, "home": None, "runner": DEFAULT_RUNNER, "model": "sonnet", "timeout_minutes": 15, "holdout_pct": 40,
             "screen_cases": None, "checks_dir": "checks", "sandbox": True}
 CASE_KEYS = ("id", "split", "prompt", "prompt_file", "files", "frozen", "checks")
 SPLITS = ("train", "holdout")
@@ -237,6 +238,10 @@ def check_top(where, data):
     if not (install == "." or workspace_path(install)):
         where.refuse(f"install {shown(install)} must be a folder relative to the workspace, or . for the "
                      f"workspace itself: no leading /, no '..' part.")
+    home = suite["home"]
+    if home is not None and not workspace_path(home):
+        where.refuse(f"home {shown(home)} must be a folder relative to the workspace, which the agent then gets as "
+                     f"its home folder (HOME): no leading /, no '..' part.")
     suite["runner"] = check_runner(where, suite["runner"])
     if not is_model(suite["model"]):
         where.refuse(f"model {shown(suite['model'])} must be a model name (one word).")
@@ -573,6 +578,8 @@ def summary_lines(suite):
              f"held out."]
     if suite["describe"]:
         lines.append(suite["describe"])
+    if suite["home"] is not None:
+        lines.append(f"The agent's home folder (HOME) is {suite['home']} in the workspace.")
     if suite["sandbox"] and isinstance(suite["runner"], dict):
         lines.append("Its runner is the suite's own command, which the evolver doesn't sandbox: the agent's commands "
                      "can reach anything your user can.")
@@ -1090,7 +1097,8 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
 
     The workspace is a new temporary folder outside the suite's folder, the individual and the run folder. It gets
     the case's fixtures, then the individual's files at the suite's install path; the frozen fixtures are hashed
-    before the runner starts. After the runner ends, the suite's checks_dir is copied fresh into folder/checks/
+    before the runner starts. When the suite names a home folder, it is made in the workspace (after the fixtures,
+    some of which may lie under it) and the runner runs with HOME set to it (runners.run). After the runner ends, the suite's checks_dir is copied fresh into folder/checks/
     (never into the workspace). When the run ended done, failed or timeout, the case's checks then run on the
     workspace (run_checks: commands and file checks, then the judges only if all of those passed; a judge stopped
     at the usage limit makes the outcome paused). The workspace is then removed, or with keep moved to
@@ -1146,6 +1154,16 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
                 raise PrepareFailed(f"The temporary folder for the workspace ({workspace}) overlaps {name} "
                                     f"({other}); set TMPDIR to a folder outside both.")
         result["frozen"] = prepare_workspace(suite, entry, individual, workspace)
+        home = None
+        if suite["home"] is not None:
+            home = os.path.join(workspace, *suite["home"].split("/"))
+            try:
+                os.makedirs(home, exist_ok=True)
+            except OSError as e:
+                raise PrepareFailed(f"The home folder {suite['home']} couldn't be made in the workspace "
+                                    f"({e.strerror or e}).") from None
+            if not real_inside(home, workspace):
+                raise PrepareFailed(f"The home folder {suite['home']} leads out of the workspace through a link.")
         installed = workspace if suite["install"] == "." else os.path.join(workspace, *suite["install"].split("/"))
         # The suite's folder whole when it can be denied (it doesn't hold the home folder), and its private files
         # one by one in any case; runners.run refuses the run when one of these can't be denied.
@@ -1164,7 +1182,7 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
         private_reads += git_dirs
         ran = runners.run(suite["runner"], workspace, installed, prompt, suite["model"],
                           suite["timeout_minutes"] * 60, config=config, output=os.path.join(folder, OUTPUT_NAME),
-                          prompt_file=prompt_file, sandbox=suite["sandbox"], deny_read=private_reads)
+                          prompt_file=prompt_file, sandbox=suite["sandbox"], deny_read=private_reads, home=home)
         agent = ran["tokens"]["used"]
         result.update(outcome=ran["outcome"], tokens={"used": agent, "agent": agent, "judge": 0},
                       runner={"exit": ran["exit"], "seconds": ran["seconds"]})

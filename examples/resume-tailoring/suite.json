@@ -1,0 +1,207 @@
+{
+  "name": "resume-tailoring",
+  "describe": "Whether the resume-tailoring skill writes a resume, and a cover letter when asked, that claims nothing the fact bank doesn't hold and leaves no review markers behind.",
+  "install": ".claude/skills/resume-tailoring",
+  "home": "home",
+  "model": "sonnet",
+  "timeout_minutes": 20,
+  "cases": [
+    {
+      "id": "payments-lead",
+      "split": "train",
+      "prompt": "artemis tailor ~/personal-assistants/artemis/jobs/bluewater-pay_head-of-engineering.md\n\nPut this application in ~/personal-assistants/artemis/applications/2026-10-15_bluewater-pay_head-of-engineering/.",
+      "files": {
+        "home/personal-assistants/artemis": "fixtures/artemis",
+        "home/personal-assistants/artemis/jobs/bluewater-pay_head-of-engineering.md": "fixtures/jobs/bluewater-pay_head-of-engineering.md"
+      },
+      "frozen": [
+        "home/personal-assistants/artemis/profile/**",
+        "home/personal-assistants/artemis/cvs/**",
+        "home/personal-assistants/artemis/jobs/**",
+        "home/personal-assistants/artemis/tools/**"
+      ],
+      "checks": [
+        {
+          "id": "claims-trace",
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+        },
+        {
+          "id": "no-leftover-markers",
+          "file": "home/personal-assistants/artemis/applications/2026-10-15_bluewater-pay_head-of-engineering/resume.md",
+          "exists": true,
+          "not_contains": [
+            "[GAP]",
+            "[VERIFY]",
+            "[CONF]",
+            "{{",
+            "**"
+          ],
+          "not_matches": "(?i)\\b(he|his|him)\\b"
+        },
+        {
+          "id": "summary-fits",
+          "rubric_file": "rubrics/summary.md",
+          "model": "opus",
+          "files": [
+            "home/personal-assistants/artemis/applications/2026-10-15_bluewater-pay_head-of-engineering/resume.md",
+            "home/personal-assistants/artemis/jobs/bluewater-pay_head-of-engineering.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "games-manager",
+      "split": "train",
+      "prompt": "artemis tailor ~/personal-assistants/artemis/jobs/lanternfish-studios_engineering-manager.md\n\nPut this application in ~/personal-assistants/artemis/applications/2026-10-16_lanternfish-studios_engineering-manager/.",
+      "files": {
+        "home/personal-assistants/artemis": "fixtures/artemis",
+        "home/personal-assistants/artemis/jobs/lanternfish-studios_engineering-manager.md": "fixtures/jobs/lanternfish-studios_engineering-manager.md"
+      },
+      "frozen": [
+        "home/personal-assistants/artemis/profile/**",
+        "home/personal-assistants/artemis/cvs/**",
+        "home/personal-assistants/artemis/jobs/**",
+        "home/personal-assistants/artemis/tools/**"
+      ],
+      "checks": [
+        {
+          "id": "claims-trace",
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+        },
+        {
+          "id": "no-leftover-markers",
+          "file": "home/personal-assistants/artemis/applications/2026-10-16_lanternfish-studios_engineering-manager/resume.md",
+          "exists": true,
+          "not_contains": [
+            "[GAP]",
+            "[VERIFY]",
+            "[CONF]",
+            "{{",
+            "**"
+          ],
+          "not_matches": "(?i)\\b(he|his|him)\\b"
+        }
+      ]
+    },
+    {
+      "id": "stretch-role",
+      "split": "train",
+      "prompt": "artemis tailor ~/personal-assistants/artemis/jobs/orbitgrid_vp-engineering.md\n\nPut this application in ~/personal-assistants/artemis/applications/2026-10-19_orbitgrid_vp-engineering/.",
+      "files": {
+        "home/personal-assistants/artemis": "fixtures/artemis",
+        "home/personal-assistants/artemis/jobs/orbitgrid_vp-engineering.md": "fixtures/jobs/orbitgrid_vp-engineering.md"
+      },
+      "frozen": [
+        "home/personal-assistants/artemis/profile/**",
+        "home/personal-assistants/artemis/cvs/**",
+        "home/personal-assistants/artemis/jobs/**",
+        "home/personal-assistants/artemis/tools/**"
+      ],
+      "checks": [
+        {
+          "id": "claims-trace",
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+        },
+        {
+          "id": "no-leftover-markers",
+          "file": "home/personal-assistants/artemis/applications/2026-10-19_orbitgrid_vp-engineering/resume.md",
+          "exists": true,
+          "not_contains": [
+            "[GAP]",
+            "[VERIFY]",
+            "[CONF]",
+            "{{",
+            "**"
+          ],
+          "not_matches": "(?i)\\b(he|his|him)\\b"
+        },
+        {
+          "id": "fit-note-written",
+          "file": "home/personal-assistants/artemis/applications/2026-10-19_orbitgrid_vp-engineering/fit.md",
+          "exists": true
+        }
+      ]
+    },
+    {
+      "id": "with-cover-letter",
+      "split": "holdout",
+      "prompt": "artemis tailor ~/personal-assistants/artemis/jobs/tidewell-health_engineering-manager.md\n\nPut this application in ~/personal-assistants/artemis/applications/2026-10-21_tidewell-health_engineering-manager/. The job asks for a short cover letter too.",
+      "files": {
+        "home/personal-assistants/artemis": "fixtures/artemis",
+        "home/personal-assistants/artemis/jobs/tidewell-health_engineering-manager.md": "fixtures/jobs/tidewell-health_engineering-manager.md"
+      },
+      "frozen": [
+        "home/personal-assistants/artemis/profile/**",
+        "home/personal-assistants/artemis/cvs/**",
+        "home/personal-assistants/artemis/jobs/**",
+        "home/personal-assistants/artemis/tools/**"
+      ],
+      "checks": [
+        {
+          "id": "claims-trace",
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+        },
+        {
+          "id": "no-leftover-markers",
+          "file": "home/personal-assistants/artemis/applications/2026-10-21_tidewell-health_engineering-manager/resume.md",
+          "exists": true,
+          "not_contains": [
+            "[GAP]",
+            "[VERIFY]",
+            "[CONF]",
+            "{{",
+            "**"
+          ],
+          "not_matches": "(?i)\\b(he|his|him)\\b"
+        },
+        {
+          "id": "cover-no-leftover-markers",
+          "file": "home/personal-assistants/artemis/applications/2026-10-21_tidewell-health_engineering-manager/cover.md",
+          "exists": true,
+          "not_contains": [
+            "[GAP]",
+            "[VERIFY]",
+            "[CONF]",
+            "{{",
+            "**"
+          ],
+          "not_matches": "(?i)\\b(he|his|him)\\b"
+        }
+      ]
+    },
+    {
+      "id": "one-page-director",
+      "split": "holdout",
+      "prompt": "artemis tailor ~/personal-assistants/artemis/jobs/kestrel-freight_engineering-director.md\n\nPut this application in ~/personal-assistants/artemis/applications/2026-10-22_kestrel-freight_engineering-director/.",
+      "files": {
+        "home/personal-assistants/artemis": "fixtures/artemis",
+        "home/personal-assistants/artemis/jobs/kestrel-freight_engineering-director.md": "fixtures/jobs/kestrel-freight_engineering-director.md"
+      },
+      "frozen": [
+        "home/personal-assistants/artemis/profile/**",
+        "home/personal-assistants/artemis/cvs/**",
+        "home/personal-assistants/artemis/jobs/**",
+        "home/personal-assistants/artemis/tools/**"
+      ],
+      "checks": [
+        {
+          "id": "claims-trace",
+          "run": "python3 {checks}/trace_claims.py home/personal-assistants/artemis"
+        },
+        {
+          "id": "no-leftover-markers",
+          "file": "home/personal-assistants/artemis/applications/2026-10-22_kestrel-freight_engineering-director/resume.md",
+          "exists": true,
+          "not_contains": [
+            "[GAP]",
+            "[VERIFY]",
+            "[CONF]",
+            "{{",
+            "**"
+          ],
+          "not_matches": "(?i)\\b(he|his|him)\\b"
+        }
+      ]
+    }
+  ]
+}

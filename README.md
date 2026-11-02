@@ -119,6 +119,10 @@ suite=$repo/evolve/standup-summary/suite.json
    python3 genome/scripts/evolve.py promote <winner> --generation <generation> --profile "$profile" --source "$skill"
    ```
 
+A worked example on a real kind of skill, one that tailors a resume to a job description and must never claim
+anything the person's fact bank doesn't hold, is in [examples/resume-tailoring/](examples/resume-tailoring/README.md).
+Its fixtures describe a made-up person.
+
 ### What a suite file looks like
 
 A suite is a folder holding a JSON suite file and the files it names. Here is the made-up skill's suite:
@@ -175,7 +179,7 @@ evolve/standup-summary/
 }
 ```
 
-The private-detail notes mention a made-up colleague, Ilona Marsh, and her phone number; the check makes sure the
+The private-detail notes mention a made-up colleague, Ilona Varga, and her phone number; the check makes sure the
 summary leaves the number out. The check script exits with an error when a section is missing:
 
 ```python
@@ -195,6 +199,7 @@ contain `..`. Unknown keys are refused. These are the suite file's top-level key
 | `name` | required | The suite's name: letters, digits, `_`, `.` and `-`, starting with a letter or digit. |
 | `describe` | none | One sentence on what the suite tests. |
 | `install` | required | The folder in the workspace where the skill's files are copied, such as `.claude/skills/standup-summary`, or `.` for the workspace's top. |
+| `home` | none | A folder in the workspace the agent gets as its home folder (`HOME`), for a skill that works in files under `~`. Fixtures can be placed under it like anywhere else. Claude Code still uses your real configuration folder and login, and the private files in your real home folder stay unreadable. |
 | `runner` | `"claude"` | How the agent is started: Claude Code, or your own command (see Runners below). |
 | `model` | `"sonnet"` | The model the agent runs on. |
 | `timeout_minutes` | 15 | Each run's time limit, in minutes. |
@@ -267,7 +272,9 @@ refused. `tokens` says how its token use is read: `none` counts 0, and `claude-j
 `{"type": "result"}` JSON object it prints, as Claude Code's JSON output has.
 
 Both kinds run without API credentials or the calling session's variables in their environment, in their own
-process group, and are stopped at the time limit. A usage-limit message pauses the run instead of failing it.
+process group, and are stopped at the time limit. When the suite names a `home` folder, both run with `HOME` set to
+that folder in the workspace; the default runner then gets `CLAUDE_CONFIG_DIR` set to your real Claude
+configuration folder (your own `CLAUDE_CONFIG_DIR`, or `~/.claude`), so it keeps your subscription's login. A usage-limit message pauses the run instead of failing it.
 
 ### How scores work
 

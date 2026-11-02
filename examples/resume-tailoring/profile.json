@@ -1,0 +1,8 @@
+{
+  "name": "resume-tailoring",
+  "describe": "A skill that tailors a person's resume, and a cover letter when asked, to a job description, using only facts from that person's fact bank.",
+  "evolvable": ["SKILL.md"],
+  "never": ["**/*.py"],
+  "caps": [{"glob": "SKILL.md", "max_growth_pct": 30}],
+  "traits": {}
+}

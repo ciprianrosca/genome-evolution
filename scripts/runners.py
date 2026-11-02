@@ -13,7 +13,9 @@ A suite names its runner (suite.py's load_suite checks the value):
 
 The default runner's agent may not read the folders and files run() is given, nor the user's credentials and Claude
 Code's transcripts, file history and login file under the home folder; every hook is off, and its tools' deny rules
-and the sandbox both enforce it. Every runner runs with API credentials, other token and key variables and the parent
+and the sandbox both enforce it. A suite may give the agent a home folder of its own inside the workspace: either
+runner then runs with HOME set to it, and the default runner keeps the real Claude configuration folder (and so the
+subscription's login) through CLAUDE_CONFIG_DIR; the deny rules keep naming the real home folder's private files. Every runner runs with API credentials, other token and key variables and the parent
 session's variables removed from its environment, in its own process group, and is stopped (TERM, then KILL) at its time limit or when the evolver is interrupted. Its combined
 output goes to a file; tokens are read from it for the default runner and for "claude-json" (the usage of the last
 {"type": "result"} object); a usage-limit message with a non-zero exit is the outcome "paused".
@@ -297,7 +299,7 @@ def stop(proc):
 
 
 def run(runner, workspace, individual, prompt, model, timeout_seconds, config=None, output=None, prompt_file=None,
-        sandbox=True, deny_read=()):
+        sandbox=True, deny_read=(), home=None):
     """Run one case's agent in workspace and return what happened:
     {'outcome': 'done' (exit 0), 'failed' (another exit), 'timeout' or 'paused' (the usage limit), 'exit': int or
     None, 'seconds', 'tokens': {'used'}, 'output_tail': the last OUTPUT_TAIL characters of its output, 'output': the
@@ -308,7 +310,9 @@ def run(runner, workspace, individual, prompt, model, timeout_seconds, config=No
     written to (a new temporary file when None). prompt_file is the file {prompt_file} names; it must lie outside
     the workspace and is written with the prompt when given; when None a temporary one is used and removed after.
     sandbox is the suite's sandbox; deny_read lists folders and files the default runner's agent may not read (the
-    user's private files under the home folder, HOME_SECRETS, are always added).
+    user's private files under the home folder, HOME_SECRETS, are always added). home, when given, is a folder (inside
+    the workspace) the runner gets as HOME; the default runner then gets CLAUDE_CONFIG_DIR set to the real Claude
+    configuration folder (claude_config_dir), and its deny rules still name the real home folder's files.
     Raises SandboxRefused before anything starts when the sandbox is required and missing, RunnerError when the
     program can't be started or a deny_read path can't be denied (it holds the workspace or the home folder)."""
     check_ready(runner, config, sandbox)
@@ -335,6 +339,10 @@ def run(runner, workspace, individual, prompt, model, timeout_seconds, config=No
                       "prompt": prompt, "model": str(model)}
             argv = fill(runner["command"], fields)
             env, tokens = runner_env(), runner.get("tokens", "none")
+        if home is not None:
+            if runner == DEFAULT_RUNNER:
+                env["CLAUDE_CONFIG_DIR"] = claude_config_dir()
+            env["HOME"] = os.path.abspath(home)
         code, timed_out, seconds = launch(argv, workspace, env, output, timeout_seconds)
     finally:
         if own_prompt:
@@ -355,6 +363,16 @@ def run(runner, workspace, individual, prompt, model, timeout_seconds, config=No
         outcome = "failed"
     return {"outcome": outcome, "exit": code, "seconds": seconds, "tokens": {"used": result_tokens(result)},
             "output_tail": text[-OUTPUT_TAIL:], "output": output}
+
+
+def claude_config_dir():
+    """The real user's Claude configuration folder, where Claude Code keeps its settings and login: the evolver's own
+    CLAUDE_CONFIG_DIR when set, else ~/.claude under the real home folder; an absolute path, so it still means the
+    same folder when the runner's HOME is another one."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        return os.path.abspath(os.path.expanduser(config_dir))
+    return os.path.join(os.path.expanduser("~"), ".claude")
 
 
 def home_secrets():
