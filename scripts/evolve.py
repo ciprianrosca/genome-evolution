@@ -7512,7 +7512,8 @@ SUITE_OUTCOME_WORDS = {"done": "done", "failed": "failed (the runner exited with
 def cmd_suite_run(args, home, config):
     """`suite run` (SUI-13): run one case of a suite with one individual (any folder, or a stored genome's
     plugin/) in a throwaway workspace; the run folder is runs/<generation or adhoc>/<case>/<genome or
-    individual>/. Prints one line; exit 0 for done, 3 for paused, 1 otherwise."""
+    individual>/. Prints the case's line, then one line per check; exit 0 for done, 3 for paused, 1 otherwise (the
+    checks' results don't change it)."""
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, stop_signal)
     generation = args.id or "adhoc"
@@ -7541,7 +7542,20 @@ def cmd_suite_run(args, home, config):
     kept = f"; the workspace is kept in {result['workspace']}" if result.get("workspace") else ""
     print(f"Case {case['id']}: {said}, {tokens_text(result['tokens']['used'])} tokens used{kept}. Its "
           f"result.json is in {folder}.")
+    for check in result.get("checks") or []:
+        print("  " + suite_check_line(check))
     return SUITE_OUTCOME_EXIT.get(outcome, 1)
+
+
+def suite_check_line(check):
+    """One check's line for `suite run`: its id, passed or failed, and for a failure the first line of its
+    evidence."""
+    if check.get("passed"):
+        return f"{check['id']}: passed"
+    first = next((line.strip() for line in (check.get("evidence") or "").splitlines() if line.strip()), "")
+    if len(first) > 200:
+        first = first[:197] + "..."
+    return f"{check['id']}: failed" + (f" ({first})" if first else "")
 
 
 def run_standalone(args):

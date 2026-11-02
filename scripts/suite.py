@@ -17,7 +17,9 @@ of them held out. Every problem raises SuiteError with one plain sentence naming
 the case and the check.
 
 run_case runs one case with one individual (a folder of the target's files) in a fresh throwaway workspace, through
-the suite's runner (runners.py), and writes the run folder's result.json.
+the suite's runner (runners.py), runs the case's checks on what the agent left, and writes the run folder's
+result.json. Command and file checks run here; a judge's model is asked through runners.judge, the only check that
+calls a model.
 
 This module is standard library only, plus genome.py (paths and globs), evolve_core.py (the error class) and
 runners.py (how a case's agent is started). It names no target: everything specific to one lives in the suite file
@@ -27,12 +29,14 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import stat
 import string
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -811,6 +815,226 @@ def copy_checks(suite, folder, result):
                                                  f"checked.")
 
 
+# ---------------------------------------------------------------- checking a run
+
+CHECKED_OUTCOMES = ("done", "failed", "timeout")  # the runs whose checks run (an agent that timed out may have
+#                                                   produced something); paused and aborted runs aren't checked
+EVIDENCE_LIMIT = 4000  # the characters of a check's evidence kept in result.json
+FILE_LIMIT = 2 * 1024 * 1024  # a file check reads at most this many bytes; a bigger file fails the check
+NOT_RUN = "not run: a mechanical check failed"
+NOT_RUN_PAUSED = "not run: an earlier judge stopped at the usage limit"
+
+
+def cap_evidence(text, tail=False):
+    """The evidence as result.json keeps it: at most EVIDENCE_LIMIT characters (the end of it with tail)."""
+    if len(text) <= EVIDENCE_LIMIT:
+        return text
+    return text[-EVIDENCE_LIMIT:] if tail else text[:EVIDENCE_LIMIT - 3] + "..."
+
+
+def seconds_text(n):
+    return f"{n:g} second" + ("" if n == 1 else "s")
+
+
+def resolve_in_workspace(workspace, rel):
+    """(the real path of the workspace path rel, None), or (None, why it can't be used) when its real location
+    leaves the workspace (a link the agent planted, or a link in a folder on the way)."""
+    top = os.path.realpath(workspace)
+    real = os.path.realpath(os.path.join(top, *rel.split("/")))
+    if real != top and not real.startswith(top.rstrip(os.sep) + os.sep):
+        return None, f"{rel} leads outside the workspace through a link, so it isn't read"
+    return real, None
+
+
+def read_workspace_file(workspace, rel, limit):
+    """(text, problem, cut): the workspace file rel read as UTF-8 with replacement, at most limit bytes (cut says
+    whether there was more), or (None, why it can't be read, False). A path leading outside the workspace is never
+    opened, nor is anything that isn't a regular file (a pipe the agent left would block)."""
+    real, why = resolve_in_workspace(workspace, rel)
+    if real is None:
+        return None, why, False
+    try:
+        info = os.stat(real)
+    except FileNotFoundError:
+        return None, f"{rel} is missing: it doesn't exist in the workspace", False
+    except OSError as e:
+        return None, f"{rel} couldn't be read ({e.strerror or e})", False
+    if not stat.S_ISREG(info.st_mode):
+        return None, f"{rel} isn't a file" + (" (it is a folder)" if stat.S_ISDIR(info.st_mode) else ""), False
+    try:
+        with open(real, "rb") as f:
+            data = f.read(limit + 1)
+    except OSError as e:
+        return None, f"{rel} couldn't be read ({e.strerror or e})", False
+    cut = len(data) > limit
+    return data[:limit].decode("utf-8", "replace"), None, cut
+
+
+def first_match_line(text, match):
+    """The line holding the start of a regular expression's match."""
+    start = text.rfind("\n", 0, match.start()) + 1
+    end = text.find("\n", match.start())
+    return text[start:end if end != -1 else len(text)].strip()
+
+
+def run_file_check(check, workspace):
+    """{'passed', 'evidence'} of a file check: every assertion it gives must hold."""
+    rel = check["file"]
+    real, why = resolve_in_workspace(workspace, rel)
+    if real is None:
+        return {"passed": False, "evidence": why + "."}
+    problems, held = [], []
+    if "exists" in check:
+        there = os.path.lexists(real)
+        if there == check["exists"]:
+            held.append(f"{rel} exists" if there else f"{rel} doesn't exist")
+        else:
+            problems.append(f"{rel} exists, but it shouldn't" if there else f"{rel} doesn't exist")
+    if any(k in check for k in FILE_ASSERTIONS if k != "exists"):
+        text, why, _cut = read_workspace_file(workspace, rel, FILE_LIMIT)
+        if why is None and _cut:
+            text, why = None, f"{rel} is larger than 2 MB, the most a file check reads"
+        if text is None:
+            problems.append(why)
+        else:
+            missing = [t for t in check.get("contains", []) if t not in text]
+            found = [t for t in check.get("not_contains", []) if t in text]
+            if missing:
+                problems.append(f"{rel} doesn't contain: " + ", ".join(json.dumps(t, ensure_ascii=False)
+                                                                        for t in missing))
+            elif "contains" in check:
+                held.append(f"{rel} contains every listed text")
+            if found:
+                problems.append(f"{rel} contains, but shouldn't: " + ", ".join(json.dumps(t, ensure_ascii=False)
+                                                                               for t in found))
+            elif "not_contains" in check:
+                held.append(f"{rel} contains none of the listed texts")
+            if "matches" in check:
+                m = re.search(check["matches"], text, re.MULTILINE)
+                if m is None:
+                    problems.append(f"{rel} has no match for {check['matches']}")
+                else:
+                    held.append(f"{rel} matches {check['matches']} at the line: {first_match_line(text, m)}")
+            if "not_matches" in check:
+                m = re.search(check["not_matches"], text, re.MULTILINE)
+                if m is not None:
+                    problems.append(f"{rel} matches {check['not_matches']}, but shouldn't, at the line: "
+                                    f"{first_match_line(text, m)}")
+                else:
+                    held.append(f"{rel} has no match for {check['not_matches']}")
+    if problems:
+        return {"passed": False, "evidence": cap_evidence("; ".join(problems) + ".")}
+    return {"passed": True, "evidence": cap_evidence("; ".join(held) + ".")}
+
+
+def run_command_check(check, workspace, folder):
+    """{'passed', 'exit', 'evidence'} of a command check: its command runs through the shell in the workspace, with
+    {checks} the run folder's checks/ (shell-quoted), in its own process group, with the runners' stripped
+    environment, stopped at the check's timeout."""
+    checks = shlex.quote(os.path.join(os.path.abspath(folder), CHECKS_NAME))
+    command = check["run"].replace(CHECKS_PLACEHOLDER, checks)
+    fd, output = tempfile.mkstemp(prefix="suite-check-", suffix=".log")
+    os.close(fd)
+    try:
+        code, timed_out, _seconds = runners.launch(["/bin/sh", "-c", command], workspace, runners.runner_env(),
+                                                   output, check["timeout"], what="The check's command")
+        text = runners.read_output(output)
+    finally:
+        try:
+            os.unlink(output)
+        except OSError:
+            pass
+    if timed_out:
+        head = f"timed out after {seconds_text(check['timeout'])}"
+        tail = text[-(EVIDENCE_LIMIT - len(head) - 1):] if text else ""
+        return {"passed": False, "exit": None, "evidence": head + ("\n" + tail if tail else "")}
+    evidence = text[-EVIDENCE_LIMIT:]
+    if not evidence.strip():
+        evidence = f"no output; exit code {code}, expected {check['exit']}"
+    return {"passed": code == check["exit"], "exit": code, "evidence": evidence}
+
+
+def rubric_text(suite, check):
+    """The judge's rubric: its judge text, or its rubric_file's text from the suite folder (never the workspace)."""
+    if check.get("judge") is not None:
+        return check["judge"]
+    with open(os.path.join(suite["root"], check["rubric_file"]), encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def judge_files(workspace, check):
+    """(path, text or None, note or None) of each file the judge reads, from the workspace, capped at
+    runners.JUDGE_FILE_CAP bytes each."""
+    files = []
+    for rel in check["files"]:
+        text, why, cut = read_workspace_file(workspace, rel, runners.JUDGE_FILE_CAP)
+        if text is None:
+            files.append((rel, None, why))
+        else:
+            files.append((rel, text, f"only its first {runners.JUDGE_FILE_CAP // 1024} KB are shown" if cut
+                          else None))
+    return files
+
+
+def run_judge_check(suite, check, workspace, config):
+    """(the check's result fields, judge tokens used, whether the usage limit paused it)."""
+    try:
+        rubric = rubric_text(suite, check)
+    except OSError as e:
+        return ({"passed": False, "evidence": f"The rubric file {check['rubric_file']} couldn't be read "
+                                              f"({e.strerror or e}).", "verdict": None, "reason": "",
+                 "tokens": {"used": 0}}, 0, False)
+    try:
+        said = runners.judge(check["model"], rubric, judge_files(workspace, check), config)
+    except runners.RunnerError as e:
+        return ({"passed": False, "evidence": " ".join(str(e).split()), "verdict": None, "reason": "",
+                 "tokens": {"used": 0}}, 0, False)
+    used = said["tokens"]["used"]
+    fields = {"verdict": said["verdict"], "reason": said["reason"], "tokens": {"used": used}}
+    if said["outcome"] == "done":
+        fields.update(passed=said["verdict"] == "pass", evidence=cap_evidence(said["reason"]))
+    else:
+        evidence = said["reason"]
+        if said["outcome"] == "failed" and said.get("answer", "").strip():
+            evidence += " Its answer: " + said["answer"].strip()
+        fields.update(passed=False, evidence=cap_evidence(evidence))
+    return fields, used, said["outcome"] == "paused"
+
+
+def run_checks(suite, case, workspace, folder, config):
+    """Run the case's checks on the workspace: every command and file check first, in the case's order, then each
+    judge only when all of them passed. Returns (the checks' results in the case's order, judge tokens used,
+    whether a judge stopped at the usage limit)."""
+    results = {}
+    for index, check in enumerate(case["checks"]):
+        if check["kind"] == "judge":
+            continue
+        start = time.monotonic()
+        if check["kind"] == "command":
+            fields = run_command_check(check, workspace, folder)
+        else:
+            fields = run_file_check(check, workspace)
+        results[index] = {"id": check["id"], "kind": check["kind"], **fields,
+                          "seconds": round(time.monotonic() - start, 1)}
+    mechanical_passed = all(r["passed"] for r in results.values())
+    judge_tokens, paused = 0, False
+    for index, check in enumerate(case["checks"]):
+        if check["kind"] != "judge":
+            continue
+        entry = {"id": check["id"], "kind": "judge"}
+        if not mechanical_passed or paused:
+            entry.update(passed=False, skipped=True, evidence=NOT_RUN if not mechanical_passed else NOT_RUN_PAUSED,
+                         verdict=None, reason="", tokens={"used": 0}, seconds=0)
+        else:
+            start = time.monotonic()
+            fields, used, stopped = run_judge_check(suite, check, workspace, config)
+            judge_tokens += used
+            paused = paused or stopped
+            entry.update(fields, seconds=round(time.monotonic() - start, 1))
+        results[index] = entry
+    return [results[i] for i in range(len(case["checks"]))], judge_tokens, paused
+
+
 def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
     """Run the case (its id) of the suite (load_suite's dict) with the individual (a folder of the target's files)
     and write the run folder's prompt.txt, output.log, checks/ and result.json; return the result.
@@ -818,11 +1042,14 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
     The workspace is a new temporary folder outside the suite's folder, the individual and the run folder. It gets
     the case's fixtures, then the individual's files at the suite's install path; the frozen fixtures are hashed
     before the runner starts. After the runner ends, the suite's checks_dir is copied fresh into folder/checks/
-    (never into the workspace). The workspace is then removed, or with keep moved to folder/workspace/. The suite's
-    folder and the individual are only read. result.json: case, outcome (done, failed, timeout or paused, from the
-    runner; aborted with a problem sentence when the workspace couldn't be prepared or the runner couldn't start),
-    tokens {used}, runner {exit, seconds}, started_at, ended_at, frozen {path: sha256}, workspace (kept path or
-    null). deny_read lists more folders the default runner's agent may not read (the evolver's working folder,
+    (never into the workspace). When the run ended done, failed or timeout, the case's checks then run on the
+    workspace (run_checks: commands and file checks, then the judges only if all of those passed; a judge stopped
+    at the usage limit makes the outcome paused). The workspace is then removed, or with keep moved to
+    folder/workspace/. The suite's folder and the individual are only read. result.json: case, outcome (done,
+    failed, timeout or paused, from the runner or a judge; aborted with a problem sentence when the workspace
+    couldn't be prepared or the runner couldn't start), tokens {used: agent plus judge, agent, judge}, runner
+    {exit, seconds}, started_at, ended_at, frozen {path: sha256}, workspace (kept path or null), checks (each
+    check's result in the case's order; [] when they didn't run). deny_read lists more folders the default runner's agent may not read (the evolver's working folder,
     with earlier runs' check scripts and other individuals); the suite's folder (or, when it holds the home folder,
     its suite file, checks_dir, prompt, rubric and fixture files one by one), the individual and the run folder are
     always denied, and so are the git directories of a repository holding the suite file (its history holds the
@@ -846,8 +1073,9 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
     os.makedirs(folder, exist_ok=True)
     for name in (RESULT_NAME, OUTPUT_NAME, PROMPT_NAME, CHECKS_NAME, KEPT_NAME):
         remove_tree(os.path.join(folder, name))
-    result = {"case": entry["id"], "outcome": None, "tokens": {"used": 0}, "runner": {"exit": None, "seconds": 0},
-              "started_at": evolve_core.now_iso(), "ended_at": None, "frozen": {}, "workspace": None}
+    result = {"case": entry["id"], "outcome": None, "tokens": {"used": 0, "agent": 0, "judge": 0},
+              "runner": {"exit": None, "seconds": 0}, "started_at": evolve_core.now_iso(), "ended_at": None,
+              "frozen": {}, "workspace": None, "checks": []}
     workspace = None
     try:
         try:
@@ -885,7 +1113,8 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
         ran = runners.run(suite["runner"], workspace, installed, prompt, suite["model"],
                           suite["timeout_minutes"] * 60, config=config, output=os.path.join(folder, OUTPUT_NAME),
                           prompt_file=prompt_file, sandbox=suite["sandbox"], deny_read=private_reads)
-        result.update(outcome=ran["outcome"], tokens=dict(ran["tokens"]),
+        agent = ran["tokens"]["used"]
+        result.update(outcome=ran["outcome"], tokens={"used": agent, "agent": agent, "judge": 0},
                       runner={"exit": ran["exit"], "seconds": ran["seconds"]})
     except (PrepareFailed, runners.RunnerError) as e:
         if isinstance(e, runners.SandboxRefused):
@@ -895,6 +1124,13 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
         try:
             if result["outcome"] is not None:
                 copy_checks(suite, folder, result)
+            if result["outcome"] in CHECKED_OUTCOMES and workspace is not None:
+                checks, judge_tokens, paused = run_checks(suite, entry, workspace, folder, config)
+                tokens = result["tokens"]
+                result.update(checks=checks, tokens={"used": tokens["agent"] + judge_tokens,
+                                                     "agent": tokens["agent"], "judge": judge_tokens})
+                if paused:
+                    result["outcome"] = "paused"
         finally:
             if workspace is not None:
                 if keep and result["outcome"] is not None:

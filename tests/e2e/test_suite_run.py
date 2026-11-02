@@ -127,7 +127,8 @@ class SuiteRunEndToEnd(unittest.TestCase):
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
         lines = [line for line in r.stdout.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 1, f"one plain line:\n{r.stdout}")
+        # The case's line comes first; one line per check follows it (spec suite-checks, point 7).
+        self.assertEqual(len(lines), 2, f"the case's line, then its one check's line:\n{r.stdout}")
         line = lines[0]
         for word in ("greet", "done", str(TOKENS), "result.json"):
             self.assertIn(word, line, f"the line names {word}")
@@ -139,7 +140,8 @@ class SuiteRunEndToEnd(unittest.TestCase):
             result = json.load(f)
         self.assertEqual(result.get("case"), "greet")
         self.assertEqual(result.get("outcome"), "done")
-        self.assertEqual(result.get("tokens"), {"used": TOKENS})
+        self.assertEqual(result.get("tokens"), {"used": TOKENS, "agent": TOKENS, "judge": 0},
+                         "no judge ran: its part is 0")
         with open(os.path.join(folder, "output.log"), encoding="utf-8") as f:
             self.assertIn('"type": "result"', f.read(), "output.log holds the runner's output")
         with open(os.path.join(folder, "checks", "has_greeting.sh"), encoding="utf-8") as f:

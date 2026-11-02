@@ -455,7 +455,8 @@ class WorkspaceRuns(RunBase):
         result = self.run_case(self.make_suite())
         self.assertEqual(result.get("case"), "edit-case")
         self.assertEqual(result.get("outcome"), "done")
-        self.assertEqual(result.get("tokens"), {"used": 0}, "a 'none' template runner reports 0 tokens")
+        self.assertEqual(result.get("tokens"), {"used": 0, "agent": 0, "judge": 0},
+                         "a 'none' template runner reports 0 tokens; no judge ran")
         runner = result.get("runner") or {}
         self.assertEqual(runner.get("exit"), 0)
         self.assertIsInstance(runner.get("seconds"), (int, float))
@@ -548,14 +549,15 @@ class RunnerBehaviour(RunBase):
                 folder = os.path.join(self.tmp, "runs", tokens)
                 result = self.run_case(self.make_suite(runner=self.template(tokens)), folder=folder)
                 self.assertEqual(result.get("outcome"), "done")
-                self.assertEqual(result.get("tokens"), {"used": used})
+                self.assertEqual(result.get("tokens"), {"used": used, "agent": used, "judge": 0})
 
     def test_default_runner_runs_claude_headless_and_reads_its_tokens(self):  # covers: SUI-4
         result = self.run_case(self.make_suite(runner="claude"))
         call = self.one_call("claude.jsonl")
         argv = call["argv"]
         self.assertEqual(result.get("outcome"), "done")
-        self.assertEqual(result.get("tokens"), {"used": CLAUDE_TOKENS}, "the last result object's usage, summed")
+        self.assertEqual(result.get("tokens"), {"used": CLAUDE_TOKENS, "agent": CLAUDE_TOKENS, "judge": 0},
+                         "the last result object's usage, summed")
         self.assertEqual(flag(argv, "-p"), PROMPT)
         self.assertEqual(flag(argv, "--model"), "toy-model-7")
         self.assertEqual(flag(argv, "--output-format"), "stream-json")
