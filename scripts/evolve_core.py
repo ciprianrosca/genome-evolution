@@ -263,7 +263,8 @@ class Adapter:
       points; share_words: what the report calls them together (default: their words); count_axes: the axes whose
       value is 1 or 0 per run, shown as "yes"/"no" for one run and "k of n" for several;
     - step_word: what the report calls one case where it counts held-out ones or the screening ones a child may be
-      fitted to ("case"); cases_word: what the cases come from ("the cases"); limit_words: what a pause waits for
+      fitted to ("case"); cases_word: what the cases come from ("the cases"); name_words: what the adapter's name
+      names, before it ("the project"); limit_words: what a pause waits for
       ("the usage limit"); target_word: what the target's files make up ("the target");
     - promote_words: how the report names the promote command; fix_words: how a red-team generation's findings are
       fixed ("by hand"); remote_words: what to do when promote's remote is missing ("name another remote");
@@ -285,6 +286,7 @@ class Adapter:
     count_axes = ()
     step_word = "case"
     cases_word = "the cases"
+    name_words = "the project"
     limit_words = "the usage limit"
     target_word = "the target"
     promote_words = "the promote command"
@@ -1217,8 +1219,8 @@ def report_text(home, state, adapter):
     light_order = (f", the first{of_source} in {possessive(adapter.cases_word)} stable order, as it is a light run"
                    if light else "")
     out += ["## What was evolved", "",
-            f"The generation evolved {target}, starting from the base genome {base}, on the project {project}. Each "
-            f"genome was "
+            f"The generation evolved {target}, starting from the base genome {base}, on {adapter.name_words} "
+            f"{project}. Each genome was "
             f"screened on the {plural(len(screening), 'screening case')} ({', '.join(screening) or 'none'}); after "
             f"screening, the base and up to {HOLDOUT_CANDIDATES} genomes of the front are {done} on the "
             f"{plural(len(holdout), 'held-out case')} ({', '.join(holdout) or 'none'}){light_order}, and the winner "

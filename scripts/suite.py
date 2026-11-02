@@ -19,7 +19,10 @@ the case and the check.
 run_case runs one case with one individual (a folder of the target's files) in a fresh throwaway workspace, through
 the suite's runner (runners.py), runs the case's checks on what the agent left, and writes the run folder's
 result.json. Command and file checks run here; a judge's model is asked through runners.judge, the only check that
-calls a model.
+calls a model. A frozen fixture the run changed, removed or replaced makes the run a hard failure.
+
+SuiteAdapter makes a suite a generation's adapter (evolve_core.Adapter): its cases come from the split, a run is
+run_case, and a run is judged on its checks and hard-failure record alone (cases passed, checks passed, tokens).
 
 This module is standard library only, plus genome.py (paths and globs), evolve_core.py (the error class) and
 runners.py (how a case's agent is started). It names no target: everything specific to one lives in the suite file
@@ -658,6 +661,39 @@ def frozen_hashes(workspace, globs):
     return found
 
 
+def frozen_change(workspace, frozen):
+    """None when every frozen fixture (frozen: {workspace path: sha256 from before the run}) is still the same
+    regular file at the same place, else one plain sentence naming each one the run changed, removed or replaced
+    (with a link, a folder or anything else, or by a link in a folder on its way): the run's hard failure."""
+    top = os.path.realpath(workspace)
+    changed, removed, replaced = [], [], []
+    for rel, digest in sorted(frozen.items()):
+        path = os.path.join(top, *rel.split("/"))
+        if not os.path.lexists(path):
+            (replaced if os.path.lexists(os.path.dirname(path)) and not os.path.isdir(os.path.dirname(path))
+             else removed).append(rel)
+            continue
+        if os.path.realpath(path) != path:
+            replaced.append(rel)
+            continue
+        try:
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode):
+                replaced.append(rel)
+            elif genome_lib.sha256_bytes(genome_lib.read_bytes(path)) != digest:
+                changed.append(rel)
+        except OSError:
+            replaced.append(rel)
+    parts = []
+    for files, how in ((changed, "changed"), (removed, "removed"), (replaced, "replaced")):
+        if files:
+            parts.append(f"{how} the frozen fixture{'s' if len(files) > 1 else ''} {evolve_core.names_list(files)}")
+    if not parts:
+        return None
+    return (f"The run {evolve_core.names_list(parts)}, which the case marks frozen, so it is a hard failure "
+            f"whatever its checks say.")
+
+
 def prepare_workspace(suite, case, individual, workspace):
     """Copy the case's fixtures into the workspace, then the individual's files at the install path, then remove
     the project settings files either brought (PROJECT_SETTINGS); return the frozen fixtures' hashes. Raises
@@ -823,6 +859,7 @@ EVIDENCE_LIMIT = 4000  # the characters of a check's evidence kept in result.jso
 FILE_LIMIT = 2 * 1024 * 1024  # a file check reads at most this many bytes; a bigger file fails the check
 NOT_RUN = "not run: a mechanical check failed"
 NOT_RUN_PAUSED = "not run: an earlier judge stopped at the usage limit"
+NOT_RUN_HARD = "not run: the run changed a frozen fixture, a hard failure whatever the checks say"
 
 
 def cap_evidence(text, tail=False):
@@ -927,17 +964,29 @@ def run_file_check(check, workspace):
     return {"passed": True, "evidence": cap_evidence("; ".join(held) + ".")}
 
 
+def check_env():
+    """A command check's environment: the runners' stripped one, with PYTHONSAFEPATH=1 (Python doesn't put the
+    script's folder or the current one, the workspace, first on its import path) and every relative or empty PATH
+    entry removed (those name the workspace too), so a module or program the agent planted there can't answer for
+    the real one."""
+    env = runners.runner_env()
+    env["PYTHONSAFEPATH"] = "1"
+    if "PATH" in env:
+        env["PATH"] = os.pathsep.join(e for e in env["PATH"].split(os.pathsep) if e and os.path.isabs(e))
+    return env
+
+
 def run_command_check(check, workspace, folder):
     """{'passed', 'exit', 'evidence'} of a command check: its command runs through the shell in the workspace, with
-    {checks} the run folder's checks/ (shell-quoted), in its own process group, with the runners' stripped
-    environment, stopped at the check's timeout."""
+    {checks} the run folder's checks/ (shell-quoted), in its own process group, with check_env()'s environment,
+    stopped at the check's timeout."""
     checks = shlex.quote(os.path.join(os.path.abspath(folder), CHECKS_NAME))
     command = check["run"].replace(CHECKS_PLACEHOLDER, checks)
     fd, output = tempfile.mkstemp(prefix="suite-check-", suffix=".log")
     os.close(fd)
     try:
-        code, timed_out, _seconds = runners.launch(["/bin/sh", "-c", command], workspace, runners.runner_env(),
-                                                   output, check["timeout"], what="The check's command")
+        code, timed_out, _seconds = runners.launch(["/bin/sh", "-c", command], workspace, check_env(), output,
+                                                   check["timeout"], what="The check's command")
         text = runners.read_output(output)
     finally:
         try:
@@ -1001,10 +1050,10 @@ def run_judge_check(suite, check, workspace, config):
     return fields, used, said["outcome"] == "paused"
 
 
-def run_checks(suite, case, workspace, folder, config):
+def run_checks(suite, case, workspace, folder, config, hard_failure=False):
     """Run the case's checks on the workspace: every command and file check first, in the case's order, then each
-    judge only when all of them passed. Returns (the checks' results in the case's order, judge tokens used,
-    whether a judge stopped at the usage limit)."""
+    judge only when all of them passed and the run isn't a hard failure (which no judge could change). Returns
+    (the checks' results in the case's order, judge tokens used, whether a judge stopped at the usage limit)."""
     results = {}
     for index, check in enumerate(case["checks"]):
         if check["kind"] == "judge":
@@ -1022,9 +1071,10 @@ def run_checks(suite, case, workspace, folder, config):
         if check["kind"] != "judge":
             continue
         entry = {"id": check["id"], "kind": "judge"}
-        if not mechanical_passed or paused:
-            entry.update(passed=False, skipped=True, evidence=NOT_RUN if not mechanical_passed else NOT_RUN_PAUSED,
-                         verdict=None, reason="", tokens={"used": 0}, seconds=0)
+        if not mechanical_passed or paused or hard_failure:
+            evidence = NOT_RUN if not mechanical_passed else NOT_RUN_HARD if hard_failure else NOT_RUN_PAUSED
+            entry.update(passed=False, skipped=True, evidence=evidence, verdict=None, reason="", tokens={"used": 0},
+                         seconds=0)
         else:
             start = time.monotonic()
             fields, used, stopped = run_judge_check(suite, check, workspace, config)
@@ -1048,7 +1098,9 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
     folder/workspace/. The suite's folder and the individual are only read. result.json: case, outcome (done,
     failed, timeout or paused, from the runner or a judge; aborted with a problem sentence when the workspace
     couldn't be prepared or the runner couldn't start), tokens {used: agent plus judge, agent, judge}, runner
-    {exit, seconds}, started_at, ended_at, frozen {path: sha256}, workspace (kept path or null), checks (each
+    {exit, seconds}, started_at, ended_at, frozen {path: sha256}, hard_failure (null, or a plain sentence naming
+    each frozen fixture the run changed, removed or replaced, found by comparing them with their hashes after the
+    runner ended and before the checks; judges then don't run), workspace (kept path or null), checks (each
     check's result in the case's order; [] when they didn't run). deny_read lists more folders the default runner's agent may not read (the evolver's working folder,
     with earlier runs' check scripts and other individuals); the suite's folder (or, when it holds the home folder,
     its suite file, checks_dir, prompt, rubric and fixture files one by one), the individual and the run folder are
@@ -1075,7 +1127,7 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
         remove_tree(os.path.join(folder, name))
     result = {"case": entry["id"], "outcome": None, "tokens": {"used": 0, "agent": 0, "judge": 0},
               "runner": {"exit": None, "seconds": 0}, "started_at": evolve_core.now_iso(), "ended_at": None,
-              "frozen": {}, "workspace": None, "checks": []}
+              "frozen": {}, "hard_failure": None, "workspace": None, "checks": []}
     workspace = None
     try:
         try:
@@ -1122,10 +1174,14 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
         result.update(outcome="aborted", problem=" ".join(str(e).split()))
     finally:
         try:
+            if result["outcome"] is not None and workspace is not None and result["frozen"]:
+                # Before the checks run, so nothing a check does can hide or cause a change.
+                result["hard_failure"] = frozen_change(workspace, result["frozen"])
             if result["outcome"] is not None:
                 copy_checks(suite, folder, result)
             if result["outcome"] in CHECKED_OUTCOMES and workspace is not None:
-                checks, judge_tokens, paused = run_checks(suite, entry, workspace, folder, config)
+                checks, judge_tokens, paused = run_checks(suite, entry, workspace, folder, config,
+                                                          hard_failure=bool(result["hard_failure"]))
                 tokens = result["tokens"]
                 result.update(checks=checks, tokens={"used": tokens["agent"] + judge_tokens,
                                                      "agent": tokens["agent"], "judge": judge_tokens})
@@ -1142,3 +1198,144 @@ def run_case(suite, case, individual, folder, config, keep=False, deny_read=()):
     result["ended_at"] = evolve_core.now_iso()
     evolve_core.write_json(os.path.join(folder, RESULT_NAME), result)
     return result
+
+
+# ---------------------------------------------------------------- the suite as a generation's adapter
+
+FAILURE_EVIDENCE_LIMIT = 4000  # the characters of a failure's evidence a reflection is shown
+SUMMARY_LIMIT = 200  # the characters of a failure's summary
+
+
+def one_line(text, cap=SUMMARY_LIMIT):
+    """text on one line, cut to cap characters with an ellipsis."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= cap else text[:cap - 3].rstrip() + "..."
+
+
+def output_tail(folder, limit=FAILURE_EVIDENCE_LIMIT):
+    """The end of a run folder's output.log (at most limit characters), or "" when there is none."""
+    try:
+        with open(os.path.join(folder, OUTPUT_NAME), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit * 4))
+            text = f.read().decode("utf-8", "replace")
+    except (OSError, TypeError):
+        return ""
+    return text[-limit:]
+
+
+class SuiteAdapter(evolve_core.Adapter):
+    """A suite (load_suite's dict) as a generation's adapter: its screening and held-out cases come from the suite's
+    split, each run is run_case in a throwaway workspace (the evolver's working folder, home, denied to the agent),
+    and a run is judged on its checks alone: cases_passed (1 when the run wasn't a hard failure and every check
+    passed, else 0), checks_passed (the share of the case's checks that passed; 0 for a hard failure) and tokens.
+    Nothing the agent wrote about itself counts. Its failures, for reflection, are the failed checks, a hard
+    failure and a timeout."""
+
+    kind = "suite"  # generation.json's adapter kind
+    axes = {"cases_passed": "higher", "checks_passed": "higher", "tokens": "lower"}
+    labels = {"cases_passed": "cases passed", "checks_passed": "checks passed", "tokens": "tokens"}
+    must_not_worsen = ("cases_passed", "checks_passed")
+    percent_axes = ("cases_passed", "checks_passed")
+    count_axes = ("cases_passed",)
+    cases_word = "the suite"
+    name_words = "the suite"
+
+    def __init__(self, suite, home, config):
+        self.suite, self.home, self.config = suite, home, config
+        self.name = suite["name"]
+        self.axes = dict(SuiteAdapter.axes)
+        self.labels = dict(SuiteAdapter.labels)
+
+    def case_entry(self, case_id):
+        for case in self.suite["cases"]:
+            if case["id"] == case_id:
+                return case
+        return None
+
+    def cases(self):
+        split = self.suite["split"]
+        return {key: [dict(self.case_entry(cid)) for cid in split[key]] for key in ("screening", "holdout")}
+
+    def run(self, case, genome, individual, folder, resume=None):
+        # A paused run simply runs again: its workspace is gone, and run_case starts the case afresh.
+        run_case(self.suite, case["id"], individual, folder, self.config, deny_read=(self.home,))
+
+    @staticmethod
+    def hard_failure(result):
+        sentence = result.get("hard_failure") if isinstance(result, dict) else None
+        return sentence if isinstance(sentence, str) and sentence.strip() else None
+
+    def values(self, result):
+        checks = [c for c in (result.get("checks") or []) if isinstance(c, dict)] if isinstance(result, dict) else []
+        passed = sum(1 for c in checks if c.get("passed") is True)
+        good = bool(checks) and self.hard_failure(result) is None
+        tokens = result.get("tokens") if isinstance(result, dict) else None
+        used = tokens.get("used") if isinstance(tokens, dict) else None
+        return {"cases_passed": 1.0 if good and passed == len(checks) else 0.0,
+                "checks_passed": passed / len(checks) if good else 0.0,
+                "tokens": used if genome_lib.is_number(used) else None}
+
+    def score(self, result):
+        if self.hard_failure(result) is not None:
+            return 0
+        values = self.values(result)
+        return 0.5 * values["checks_passed"] + 0.5 * values["cases_passed"]
+
+    def check_words(self, case_id, check):
+        """How a failed check is named in its summary: its kind and id, and for a command its exit code."""
+        kind = check.get("kind")
+        cid = check.get("id")
+        if kind == "command":
+            entry = self.case_entry(case_id) or {}
+            expected = next((c.get("exit") for c in entry.get("checks") or [] if c.get("id") == cid), None)
+            code = check.get("exit")
+            if code is None:
+                return f"The command check {cid} failed: it didn't finish"
+            tail = f", expected {expected}" if expected is not None else ""
+            return f"The command check {cid} failed: it exited with code {code}{tail}"
+        if kind == "judge":
+            return f"The judge check {cid} failed"
+        return f"The {kind} check {cid} failed" if kind else f"The check {cid} failed"
+
+    def failures(self, case, genome, folder, result):
+        """One failure per failed check in the case's order (a skipped judge isn't one), led by the hard failure and
+        followed by a timeout; [] for a run whose every check passed."""
+        if not isinstance(result, dict):
+            return []
+        case_id = case["id"]
+        found = []
+        hard = self.hard_failure(result)
+        if hard is not None:
+            found.append({"id": f"{case_id}/{genome}/hard-failure", "kind": "hard_failure", "case": case_id,
+                          "summary": one_line(hard), "evidence": hard[:FAILURE_EVIDENCE_LIMIT]})
+        for check in result.get("checks") or []:
+            if not isinstance(check, dict) or check.get("passed") is True or check.get("skipped"):
+                continue
+            evidence = str(check.get("evidence") or check.get("reason") or "")
+            lines = [line.strip() for line in evidence.splitlines() if line.strip()]
+            command = check.get("kind") == "command"
+            # A command's output says what went wrong at its end; a file check's or a judge's evidence at its start.
+            detail = (lines[-1] if command else lines[0]) if lines else ""
+            words = self.check_words(case_id, check)
+            if detail:
+                words += ("; its output ends: " if command else ": ") + detail
+            found.append({"id": f"{case_id}/{genome}/{check.get('id')}", "kind": "check_failed", "case": case_id,
+                          "summary": one_line(words.rstrip(". ") + "."),
+                          "evidence": evidence[-FAILURE_EVIDENCE_LIMIT:] if command else
+                          evidence[:FAILURE_EVIDENCE_LIMIT]})
+        if result.get("outcome") == "timeout":
+            minutes = self.suite.get("timeout_minutes")
+            limit = f" of {minutes:g} minutes" if genome_lib.is_number(minutes) else ""
+            tail = output_tail(folder) if folder else ""
+            found.append({"id": f"{case_id}/{genome}/timeout", "kind": "timeout", "case": case_id,
+                          "summary": f"The agent was stopped at the suite's time limit{limit} before it finished.",
+                          "evidence": tail or "The run's output was empty."})
+        return found
+
+    def light_total(self, state):
+        return len(self.suite["split"]["holdout"])
+
+    def continue_hint(self, gen_id):
+        return (f"`evolve.py generation --id {gen_id} --suite {self.suite['path']}` with the --profile and --source "
+                f"it was started with")

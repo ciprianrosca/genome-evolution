@@ -6901,7 +6901,16 @@ def confirmed(yes):
     return True
 
 
-def axis_mean_text(axis, value):
+def axis_mean_text(axis, value, adapter=None):
+    """One held-out axis mean for the summary: in Regista's words for Regista's axes, else in the adapter's (a share
+    as a percentage, any other axis per run)."""
+    if adapter is not None and not isinstance(adapter, RegistaAdapter):
+        words = adapter.axis_words(axis)
+        if value is None:
+            return f"{words} unknown"
+        if axis in adapter.percent_axes:
+            return f"{value * 100:.0f}% of {words}"
+        return f"{evolve_core.figure(value)} {words} per {adapter.run_word}"
     if value is None:
         return f"{AXIS_WORDS[axis]} unknown"
     if axis == "requirements":
@@ -6914,7 +6923,9 @@ def axis_mean_text(axis, value):
 
 
 def print_generation_summary(gen):
-    state = gen.state
+    """The plain summary a finished (or stopped) generation prints, in its adapter's words."""
+    state, adapter = gen.state, gen.adapter
+    run, runs = adapter.run_word, adapter.runs_word()
     spent, children, stopped = state["spent"], state["children"], state["stopped"]
     print()
     print(f"Generation {state['id']} on {state['project']}: it evolved {state['target']} from the base {state['base']}.")
@@ -6923,27 +6934,28 @@ def print_generation_summary(gen):
     d = len(state["discarded"]) - failed
     if d:
         made += (f" {d} near-cop{'y' if d == 1 else 'ies'} of stored genomes {'was' if d == 1 else 'were'} discarded "
-                 f"before any replay.")
+                 f"before any {run}.")
     if failed:
         made += (f" {plural(failed, 'reflection')} failed and {'was' if failed == 1 else 'were'} discarded (the "
                  f"reasons are in generation.json); the parent's next failure was tried instead.")
     print(made)
     print(f"Tokens spent: {tokens_text(spent['total'])} of the budget of {tokens_text(state['budget'])} "
-          f"({tokens_text(spent['replays'])} on replays, {tokens_text(spent['reflections'])} on reflections).")
-    print(f"It stopped early: {STOP_WORDS[stopped]}." if stopped else
+          f"({tokens_text(spent['replays'])} on {runs}, {tokens_text(spent['reflections'])} on reflections).")
+    print(f"It stopped early: {evolve_core.stop_words(adapter)[stopped]}." if stopped else
           f"It stopped after making its full population of {plural(gen.population, 'child', 'children')}.")
     front = state.get("front") or []
     print(f"The front (the screened genomes that no other one beats on every axis): {names_list(front)}." if front
-          else "The front is empty: no genome finished its screening replays.")
+          else f"The front is empty: no genome finished its screening {runs}.")
     held = (state.get("axes") or {}).get("holdout") or {}
     if held:
         print(f"Held-out results, over the {plural(len(gen.holdout), 'held-out case')}:")
         for genome, axes in held.items():
             done = len(gen.finished(genome, gen.holdout))
             part = "" if done == len(gen.holdout) else f" (only {done} of {len(gen.holdout)} cases finished)"
-            print(f"  {genome}{part}: " + "; ".join(axis_mean_text(a, axes.get(a)) for a in SELECTION_AXES) + ".")
+            print(f"  {genome}{part}: " + "; ".join(axis_mean_text(a, axes.get(a), adapter) for a in adapter.axes)
+                  + ".")
     else:
-        print("Held-out results: none; nothing was replayed on the held-out cases.")
+        print(f"Held-out results: none; nothing was {adapter.run_done} on the held-out cases.")
     if state.get("winner"):
         print(f"Winner: {state['winner']}. {state['why']}")
     else:
@@ -6951,14 +6963,15 @@ def print_generation_summary(gen):
     if state.get("red_team") is True:
         print("This was a red-team generation: its genomes and their descendants can never become a pull request.")
     if state.get("light") is True:
-        print(f"This was a light run: the held-out check covered only {plural(len(gen.holdout), 'held-out step')} of "
-              f"the bench's {state.get('bench_holdout_count')}.")
+        print(f"This was a light run: the held-out check covered only "
+              f"{plural(len(gen.holdout), f'held-out {adapter.step_word}')} of "
+              f"{evolve_core.possessive(adapter.cases_word)} {adapter.light_total(state)}.")
     print(f"Nothing was promoted. The whole record is in {gen.path}; for the full report, run "
           f"`python3 {os.path.join(HERE, 'evolve.py')} report {state['id']}`.")
 
 
 def paused_note(gen):
-    """Where and until when the generation's paused replay waits."""
+    """Where and until when the generation's paused run (a replay for Regista) waits."""
     for _, case, genome, folder in replay_folders(gen.home, gen.id):
         result = load_spec(read_text(os.path.join(folder, "result.json")))
         if result and result.get("outcome") == "paused":
@@ -6971,26 +6984,30 @@ def paused_note(gen):
             when = (f"after {people_time(epoch)}" if epoch is not None else
                     f"once the limit resets ({result['resets_text']})" if result.get("resets_text") else
                     "once the usage limit resets")
-            return f"the replay of {genome} on {case}", when
-    return "a replay", "once the usage limit resets"
+            return f"the {gen.adapter.run_word} of {genome} on {case}", when
+    return f"a {gen.adapter.run_word}", "once the usage limit resets"
 
 
 def continue_command(args, state):
     """The exact command that continues this generation, on one line: its id, target, budget and base, and the
-    project, profile and source when they were given (the seed is kept in generation.json), led by
-    REGISTA_EVOLVE_HOME=<path> when that variable is set."""
+    project, profile and source when they were given (a suite generation's always has its suite, profile and source;
+    the seed is kept in generation.json), led by REGISTA_EVOLVE_HOME=<path> when that variable is set."""
     argv = ["python3", os.path.join(HERE, "evolve.py"), "generation", "--id", state["id"], "--target",
             state["target"], "--budget", str(state["budget"]), "--from", state["base"]]
     if state.get("red_team") is True:
         argv.append("--red-team")
     if state.get("light") is True:
         argv.append("--light")
-    if args.project is not None:
-        argv += ["--project", state["project"]]
-    if os.path.abspath(args.profile) != os.path.abspath(DEFAULT_PROFILE):
-        argv += ["--profile", os.path.abspath(args.profile)]
-    if args.source is not None and os.path.abspath(args.source) != regista_checkout():
-        argv += ["--source", os.path.abspath(args.source)]
+    if getattr(args, "suite", None) is not None:
+        argv += ["--suite", os.path.abspath(args.suite), "--profile", os.path.abspath(args.profile), "--source",
+                 os.path.abspath(args.source)]
+    else:
+        if args.project is not None:
+            argv += ["--project", state["project"]]
+        if os.path.abspath(args.profile) != os.path.abspath(DEFAULT_PROFILE):
+            argv += ["--profile", os.path.abspath(args.profile)]
+        if args.source is not None and os.path.abspath(args.source) != regista_checkout():
+            argv += ["--source", os.path.abspath(args.source)]
     command = " ".join(shlex.quote(a) for a in argv)
     if os.environ.get("REGISTA_EVOLVE_HOME"):
         command = f"REGISTA_EVOLVE_HOME={shlex.quote(evolve_home())} {command}"
@@ -7028,13 +7045,110 @@ def light_holdout(project, holdout, count, recorded, gen_id):
     return sorted(holdout, key=lambda c: split_order_key(project, c["step"]))[:count]
 
 
+def generation_budget(args, config):
+    """The generation's budget: --budget, else evolve.json budget_tokens; a whole number of tokens above 0."""
+    budget = args.budget if args.budget is not None else config.get("budget_tokens", DEFAULTS["budget_tokens"])
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
+        raise EvolveError("The budget must be a whole number of tokens above 0 (--budget, or budget_tokens in "
+                          "evolve.json).")
+    return budget
+
+
+def generation_population(config):
+    """A full generation's population: evolve.json population, a whole number of at least 1."""
+    population = config_number(config, "population", DEFAULTS["population"], 1)
+    if population != int(population):
+        raise EvolveError("population in evolve.json must be a whole number of at least 1.")
+    return int(population)
+
+
+def check_base_exists(home, base):
+    if base == GENOME_CURRENT or not safe_name(base) or not os.path.isdir(os.path.join(home, "genomes", base)):
+        raise EvolveError(f"There is no stored genome {base} to start from; seed one with `evolve.py genome seed` or "
+                          f"name another with --from.")
+
+
+def check_base_fits(home, base, profile, target):
+    """The target isn't a judge, the base was made with this profile, and the target is one of its evolvable
+    files."""
+    refusal = genome_lib.judge_refusal(profile, target)
+    if refusal:
+        raise EvolveError(f"{refusal} Nothing was started; pick another file with --target.")
+    stored = genome_lib.read_genome(home, base)
+    if stored.get("profile") != profile["name"]:
+        raise EvolveError(f"The genome {base} was made with the profile {stored.get('profile')}, not "
+                          f"{profile['name']}; pass its own profile with --profile.")
+    problem = genome_lib.candidate_path_problem(profile, target, {e["path"] for e in stored["files"]}, base)
+    if problem:
+        raise EvolveError(f"{problem} A generation evolves one of the base genome's evolvable files.")
+
+
+def suite_generation_setup(args, home, config, previous, same, gen_id):
+    """`generation --suite` (SUI-17): the suite loaded with the profile and source (a suite, prompt, rubric or check
+    script a genome could change is refused), its SuiteAdapter, and the settings a generation needs, all checked
+    before anything is written. Returns (adapter, screening, holdout, target, base, seed, budget, population,
+    profile, source)."""
+    if args.project is not None:
+        raise EvolveError("--project names a project on the bench; a suite generation takes its cases from the suite, "
+                          "so drop --project.")
+    if args.red_team:
+        raise EvolveError("A red-team generation looks for routes past Regista's guards on the bench; it can't run on "
+                          "a suite, so drop --red-team.")
+    if args.source is None:
+        raise EvolveError("A suite generation needs --source, the folder holding the target's files (the folder its "
+                          "base genome was seeded from with `evolve.py genome seed --profile <profile> --source "
+                          "<folder>`).")
+    target = args.target
+    if not target or target == "auto":
+        raise EvolveError("A suite generation needs --target, the one evolvable file it evolves (such as --target "
+                          "guide.md); auto works only for Regista's bench.")
+    source = args.source = os.path.abspath(args.source)
+    if not os.path.isdir(source):
+        raise EvolveError(f"--source {source} isn't a folder; give the folder holding the target's files.")
+    suite_path = args.suite = os.path.abspath(args.suite)
+    kept = (previous or {}).get("adapter")
+    same("suite file", suite_path, kept.get("suite") if isinstance(kept, dict) else None)
+    profile = genome_lib.load_profile(args.profile, source=source)
+    loaded = suite_lib.load_suite(suite_path, profile=profile, source=source)
+    same("suite", loaded["name"], (previous or {}).get("project"))
+    adapter = suite_lib.SuiteAdapter(loaded, home, config)
+    screening, holdout = evolve_core.check_adapter(adapter)  # a broken adapter runs nothing and writes nothing
+    same("target", target, (previous or {}).get("target"))
+    same("base", args.base, (previous or {}).get("base"))
+    same("seed", args.seed, (previous or {}).get("seed"))
+    base = (previous or {}).get("base") or args.base or "seed"
+    seed = (previous or {}).get("seed") if previous else args.seed
+    seed = generation_defaults_seed(gen_id) if seed is None else seed
+    budget = generation_budget(args, config)
+    if args.light:
+        population, count = light_settings(config)
+        recorded = (previous or {}).get("holdout_cases")
+        if isinstance(recorded, list):
+            by_id = {c["id"]: c for c in holdout}
+            missing = [str(cid) for cid in recorded if cid not in by_id]
+            if missing:
+                raise EvolveError(f"The light generation {gen_id} checks the held-out cases "
+                                  f"{names_list(map(str, recorded))}, but the suite no longer holds out "
+                                  f"{names_list(missing)}; pick another --id for a new generation.")
+            holdout = [by_id[cid] for cid in recorded]
+        else:
+            holdout = holdout[:count]  # the first held-out cases in the suite's stable order
+    else:
+        population = generation_population(config)
+    check_base_exists(home, base)
+    check_base_fits(home, base, profile, target)
+    return adapter, screening, holdout, target, base, seed, budget, population, profile, source
+
+
 def cmd_generation(args, home, config):
     """One generation for one evolvable file (LOOP-1, LOOP-2, LOOP-3, LOOP-15): prints the plan and its estimate,
-    asks for confirmation, then screens, breeds, selects and prints a plain summary."""
+    asks for confirmation, then screens, breeds, selects and prints a plain summary. On Regista's bench by default;
+    with --suite on a suite file's cases (SUI-17), through the same steps in the suite's words."""
     gen_id = args.id or dt.datetime.now().strftime("gen-%Y%m%d-%H%M")
     if not safe_name(gen_id) or gen_id == "adhoc":
         raise EvolveError(f"The generation id {gen_id!r} can't be used: use letters, digits, _ . and -, starting with "
                           f"a letter or digit (adhoc is kept for single replays).")
+    on_suite = getattr(args, "suite", None) is not None
     path = os.path.join(home, "runs", gen_id, GENERATION_FILE)
     previous = None
     if os.path.lexists(path):
@@ -7042,6 +7156,16 @@ def cmd_generation(args, home, config):
         if previous is None or not isinstance(previous.get("children"), list):
             raise EvolveError(f"{path} isn't a generation's record, so the generation {gen_id} can't be continued; "
                               f"move it away or pick another --id.")
+        kept = previous.get("adapter")
+        kept_kind = kept.get("kind") if isinstance(kept, dict) else kept
+        if kept_kind == suite_lib.SuiteAdapter.kind and not on_suite:
+            raise EvolveError(f"The generation {gen_id} runs on the suite "
+                              f"{kept.get('suite') if isinstance(kept, dict) else ''}, so it continues only with "
+                              f"--suite, --profile and --source as it was started; or pick another --id.")
+        if kept_kind != suite_lib.SuiteAdapter.kind and on_suite:
+            raise EvolveError(f"The generation {gen_id} runs on the bench, not on a suite, so it can't be continued "
+                              f"with --suite: drop --suite to continue it, or pick another --id for a suite "
+                              f"generation.")
         if previous.get("red_team") is True and not args.red_team:
             raise EvolveError(f"The generation {gen_id} is a red-team generation, so it continues only as one: run the "
                               f"same command with --red-team, or pick another --id for a normal generation.")
@@ -7062,55 +7186,48 @@ def cmd_generation(args, home, config):
             raise EvolveError(f"The generation {gen_id} already runs with the {what} {kept}, not {given}; run the "
                               f"same command to continue it, or pick another --id for a new generation.")
 
-    same("project", args.project, (previous or {}).get("project"))
-    project, screening, holdout = bench_cases(home, (previous or {}).get("project") or args.project)
-    adapter = RegistaAdapter(home, config, project, screening, holdout)
-    screening, holdout = evolve_core.check_adapter(adapter)  # a broken adapter runs nothing and writes nothing
-    target = args.target or config.get("target") or DEFAULTS["target"]
-    target = auto_target(home, project) if target == "auto" else target
-    same("target", target, (previous or {}).get("target"))
-    same("base", args.base, (previous or {}).get("base"))
-    same("seed", args.seed, (previous or {}).get("seed"))
-    base = (previous or {}).get("base") or args.base or "seed"
-    seed = (previous or {}).get("seed") if previous else args.seed
-    seed = generation_defaults_seed(gen_id) if seed is None else seed
-    budget = args.budget if args.budget is not None else config.get("budget_tokens", DEFAULTS["budget_tokens"])
-    if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
-        raise EvolveError("The budget must be a whole number of tokens above 0 (--budget, or budget_tokens in "
-                          "evolve.json).")
-    if args.light:
-        population, light_cases = light_settings(config)
-        bench_holdout = len(holdout)
-        holdout = light_holdout(project, holdout, light_cases, (previous or {}).get("holdout_cases"), gen_id)
+    if on_suite:
+        (adapter, screening, holdout, target, base, seed, budget, population, profile,
+         source) = suite_generation_setup(args, home, config, previous, same, gen_id)
+        project = adapter.name
+        holdout_total = len(adapter.suite["split"]["holdout"])
+        task_model = adapter.suite["model"]
     else:
-        population = config_number(config, "population", DEFAULTS["population"], 1)
-        if population != int(population):
-            raise EvolveError("population in evolve.json must be a whole number of at least 1.")
-        population = int(population)
-
-    if base == GENOME_CURRENT or not safe_name(base) or not os.path.isdir(os.path.join(home, "genomes", base)):
-        raise EvolveError(f"There is no stored genome {base} to start from; seed one with `evolve.py genome seed` or "
-                          f"name another with --from.")
-    source = args.source = source_folder(args, config)
-    profile = genome_lib.load_profile(args.profile, source=source)
-    refusal = genome_lib.judge_refusal(profile, target)
-    if refusal:
-        raise EvolveError(f"{refusal} Nothing was started; pick another file with --target.")
-    stored = genome_lib.read_genome(home, base)
-    if stored.get("profile") != profile["name"]:
-        raise EvolveError(f"The genome {base} was made with the profile {stored.get('profile')}, not "
-                          f"{profile['name']}; pass its own profile with --profile.")
-    problem = genome_lib.candidate_path_problem(profile, target, {e["path"] for e in stored["files"]}, base)
-    if problem:
-        raise EvolveError(f"{problem} A generation evolves one of the base genome's evolvable files.")
+        same("project", args.project, (previous or {}).get("project"))
+        project, screening, holdout = bench_cases(home, (previous or {}).get("project") or args.project)
+        adapter = RegistaAdapter(home, config, project, screening, holdout)
+        screening, holdout = evolve_core.check_adapter(adapter)  # a broken adapter runs nothing and writes nothing
+        target = args.target or config.get("target") or DEFAULTS["target"]
+        target = auto_target(home, project) if target == "auto" else target
+        same("target", target, (previous or {}).get("target"))
+        same("base", args.base, (previous or {}).get("base"))
+        same("seed", args.seed, (previous or {}).get("seed"))
+        base = (previous or {}).get("base") or args.base or "seed"
+        seed = (previous or {}).get("seed") if previous else args.seed
+        seed = generation_defaults_seed(gen_id) if seed is None else seed
+        budget = generation_budget(args, config)
+        if args.light:
+            population, light_count = light_settings(config)
+            holdout_total = len(holdout)
+            holdout = light_holdout(project, holdout, light_count, (previous or {}).get("holdout_cases"), gen_id)
+        else:
+            population = generation_population(config)
+        check_base_exists(home, base)
+        source = args.source = source_folder(args, config)
+        profile = genome_lib.load_profile(args.profile, source=source)
+        check_base_fits(home, base, profile, target)
+        task_model = config.get("task_model") or DEFAULTS["task_model"]
 
     state = previous or evolve_core.new_state(gen_id, project, target, base, budget, seed)
+    if on_suite:
+        state["adapter"] = {"kind": suite_lib.SuiteAdapter.kind, "suite": args.suite}
     if args.red_team:
         state["red_team"] = True  # LOOP-7: kept by every continuation, and promote refuses its genomes for good
     if args.light:
         # LOOP-19: kept by every continuation, which checks the same held-out cases.
-        state.update(light=True, holdout_cases=[c["step"] for c in holdout],
-                     bench_holdout_count=bench_holdout)
+        state.update(light=True, holdout_cases=[c["id"] for c in holdout])
+        if not on_suite:
+            state["bench_holdout_count"] = holdout_total
     state.update(budget=budget, population=population)
     state.setdefault("discarded", [])
     state.setdefault("limited", [])  # reflections the usage limit stopped, kept for the tokens they spent
@@ -7120,42 +7237,48 @@ def cmd_generation(args, home, config):
     gen = evolve_core.Generation(home, config, state, adapter, profile, source, population, generation_mutate,
                                  screening=screening, holdout=holdout)
 
+    # The plan, in the adapter's words: a replay of a step on the bench for Regista, a run of a case of the suite.
+    run, runs, step = adapter.run_word, adapter.runs_word(), adapter.step_word
+    of_cases = evolve_core.possessive(adapter.cases_word)
     replays, tokens, per_replay, over = generation_plan(gen, screening, holdout, population)
-    task_model = config.get("task_model") or DEFAULTS["task_model"]
     reflection_model = config.get("reflection_model") or DEFAULTS["reflection_model"]
     if state.get("red_team") is True:
         print(f"Red-team generation {gen_id} on the project {project}, whose results can never become a pull request: "
               f"it evolves {target}, starting from the genome {base}, to find routes past the guards, and promote "
               f"refuses its genomes and every genome descended from them.")
     else:
-        print(f"Generation {gen_id} on the project {project}: it evolves {target}, starting from the genome {base}.")
+        print(f"Generation {gen_id} on {adapter.name_words} {project}: it evolves {target}, starting from the "
+              f"genome {base}.")
     print(f"Population: {plural(population, 'child', 'children')}, each aimed at one failure of its parent. "
-          f"Candidates run on {task_model} and reflection on {reflection_model}, one replay at a time.")
+          f"Candidates run on {task_model} and reflection on {reflection_model}, one {run} at a time.")
     if state.get("light") is True:
         print(f"This is a light run: its population comes from light.population in evolve.json (default "
-              f"{LIGHT_DEFAULTS['population']}), and the final check replays only "
-              f"{plural(len(holdout), 'held-out step')} of the bench's {state['bench_holdout_count']} (light.holdout_cases, "
-              f"default {LIGHT_DEFAULTS['holdout_cases']}), the first in the bench's stable order. evolve.json and the "
-              f"bench stay as they are.")
-    print(f"Screening cases ({len(screening)}): {', '.join(c['step'] for c in screening)}.")
+              f"{LIGHT_DEFAULTS['population']}), and the final check {runs} only "
+              f"{plural(len(holdout), f'held-out {step}')} of {of_cases} {adapter.light_total(state)} "
+              f"(light.holdout_cases, default {LIGHT_DEFAULTS['holdout_cases']}), the first in {of_cases} stable "
+              f"order. evolve.json and {adapter.cases_word} stay as they are.")
+    print(f"Screening cases ({len(screening)}): {', '.join(c['id'] for c in screening)}.")
     if state.get("light") is True:
-        print(f"Held-out cases ({len(holdout)} of {state['bench_holdout_count']}, a light run): "
-              f"{', '.join(c['step'] for c in holdout)}.")
+        print(f"Held-out cases ({len(holdout)} of {adapter.light_total(state)}, a light run): "
+              f"{', '.join(c['id'] for c in holdout)}.")
     else:
-        print(f"Held-out cases ({len(holdout)}): {', '.join(c['step'] for c in holdout)}.")
-    mean = (f"the mean of the {plural(over, 'finished replay')} in runs/" if over else
-            "the default, as runs/ holds no finished replay yet")
-    print(f"Estimate: {replays} replays (the base and each child on the screening cases, and at most "
+        print(f"Held-out cases ({len(holdout)}): {', '.join(c['id'] for c in holdout)}.")
+    mean = (f"the mean of the {plural(over, f'finished {run}')} in runs/" if over else
+            f"the default, as runs/ holds no finished {run} yet")
+    print(f"Estimate: {replays} {runs} (the base and each child on the screening cases, and at most "
           f"{min(HOLDOUT_CANDIDATES, population) + 1} genomes on the held-out cases) and about {tokens_text(tokens)} "
-          f"tokens ({tokens_text(per_replay)} per replay, {mean}, plus {tokens_text(REFLECTION_ESTIMATE)} per "
+          f"tokens ({tokens_text(per_replay)} per {run}, {mean}, plus {tokens_text(REFLECTION_ESTIMATE)} per "
           f"reflection).")
     print(f"Budget: {tokens_text(budget)} tokens; nothing starts that would go over it.")
     print("If it stops before the end, this command continues it:")
     print(f"  {continue_command(args, state)}")
     if previous is not None:
         print(f"This continues the generation {gen_id}: {plural(len(state['children']), 'child', 'children')} made "
-              f"and {tokens_text(gen.spent()['total'])} tokens spent so far; every finished replay is reused.")
-    check_sandbox(config, project)
+              f"and {tokens_text(gen.spent()['total'])} tokens spent so far; every finished {run} is reused.")
+    if on_suite:
+        runners.check_ready(adapter.suite["runner"], config, adapter.suite["sandbox"])
+    else:
+        check_sandbox(config, project)
     if not confirmed(args.yes):
         return 1
 
@@ -7168,7 +7291,7 @@ def cmd_generation(args, home, config):
             gen.save()
         except (OSError, EvolveError, KeyboardInterrupt):
             pass  # the record stays as it was after the last action; the report then says it hasn't finished
-        print(f"Generation {gen_id} was interrupted. Every finished replay and child is kept; to continue it, run:",
+        print(f"Generation {gen_id} was interrupted. Every finished {run} and child is kept; to continue it, run:",
               file=sys.stderr)
         print(f"  {continue_command(args, state)}", file=sys.stderr, flush=True)
         raise
@@ -7176,17 +7299,17 @@ def cmd_generation(args, home, config):
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
     if stopped == STOP_PAUSED and gen.paused_reflection:
-        print(f"Generation {gen_id} paused: {gen.paused_reflection} reached the Claude subscription's usage limit, "
-              f"so no child was made from it. {tokens_text(state['spent']['total'])} tokens spent so far of the budget "
-              f"of {tokens_text(budget)}. Once the limit resets, run this command to continue; every finished replay "
-              f"and child is reused, and that failure is tried again:")
+        print(f"Generation {gen_id} paused: {gen.paused_reflection} reached {adapter.limit_words}, so no child was "
+              f"made from it. {tokens_text(state['spent']['total'])} tokens spent so far of the budget of "
+              f"{tokens_text(budget)}. Once the limit resets, run this command to continue; every finished {run} and "
+              f"child is reused, and that failure is tried again:")
         print(f"  {continue_command(args, state)}")
         return PAUSED_EXIT
     if stopped == STOP_PAUSED:
         which, when = paused_note(gen)
-        print(f"Generation {gen_id} paused: {which} reached the Claude subscription's usage limit. "
+        print(f"Generation {gen_id} paused: {which} reached {adapter.limit_words}. "
               f"{tokens_text(state['spent']['total'])} tokens spent so far of the budget of {tokens_text(budget)}. "
-              f"Run this command {when} to resume it; every finished replay and child is reused:")
+              f"Run this command {when} to resume it; every finished {run} and child is reused:")
         print(f"  {continue_command(args, state)}")
         return PAUSED_EXIT
     print_generation_summary(gen)
@@ -7211,18 +7334,42 @@ winner_diff = evolve_core.winner_diff
 def adapter_for_state(home, config, state):
     """The adapter a generation ran with, rebuilt from generation.json's `adapter` ({"kind": ..., settings}) for its
     report and its promotion. A state without the key is Regista's (Regista's generations don't write it), and
-    rebuilding RegistaAdapter reads no bench file: it gets empty case lists. A kind this file doesn't know is a plain
-    EvolveError naming it."""
+    rebuilding RegistaAdapter reads no bench file: it gets empty case lists. A suite generation's SuiteAdapter is
+    rebuilt from its suite file (suite_adapter_for_state). A kind this file doesn't know is a plain EvolveError naming
+    it."""
     spec = state.get("adapter")
     if spec is None:
         return RegistaAdapter(home, config, state.get("project"), [], [])
     kind = spec.get("kind") if isinstance(spec, dict) else spec
     if kind == RegistaAdapter.kind:
         return RegistaAdapter(home, config, state.get("project"), [], [])
+    if kind == suite_lib.SuiteAdapter.kind:
+        return suite_adapter_for_state(home, config, state, spec)
     shown = kind if isinstance(kind, str) and kind.strip() else repr(kind)
     raise EvolveError(f"The generation {state.get('id')} was made with the adapter kind {' '.join(shown.split())}, "
                       f"which this evolve.py doesn't know, so it can't be reported on or promoted here; use the "
                       f"evolve.py that made it.")
+
+
+def suite_adapter_for_state(home, config, state, spec):
+    """A suite generation's SuiteAdapter, from the suite file generation.json's adapter names (loaded again as it is
+    now); a suite file that is gone or no longer loads is a plain EvolveError naming it."""
+    gen_id = state.get("id")
+    path = spec.get("suite") if isinstance(spec, dict) else None
+    if not isinstance(path, str) or not path.strip() or not os.path.isabs(path):
+        raise EvolveError(f"The generation {gen_id} was made on a suite, but its generation.json doesn't name the "
+                          f"suite file by its full path, so it can't be reported on or promoted.")
+    if not os.path.isfile(path):
+        raise EvolveError(f"The generation {gen_id} was made on the suite {path}, which is gone, so it can't be "
+                          f"reported on or promoted; put the suite file back where it was.")
+    try:
+        loaded = suite_lib.load_suite(path)
+    except (EvolveError, OSError) as e:
+        reason = " ".join(str(getattr(e, "strerror", None) or e).split()).rstrip(".")
+        raise EvolveError(f"The generation {gen_id} was made on the suite {path}, which no longer loads ({reason}), "
+                          f"so it can't be reported on or promoted; fix the suite file or put it back as it was.") \
+            from None
+    return suite_lib.SuiteAdapter(loaded, home, config)
 
 
 def refuse_unknown_adapter(args, home):
@@ -7671,6 +7818,9 @@ def build_parser():
     p.add_argument("--source", default=None,
                    help="the source folder (default: the Regista checkout, the folder holding genome/, or evolve.json "
                         "regista_checkout)")
+    p.add_argument("--suite", default=None,
+                   help="run the generation on a suite file's cases instead of the bench; needs --profile, --source "
+                        "and --target, and a base genome seeded with that profile")
     p.set_defaults(func=cmd_generation)
 
     p = sub.add_parser("report", help="print a generation's report")
