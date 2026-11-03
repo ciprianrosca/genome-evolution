@@ -757,5 +757,69 @@ class HomeSetting(runs.RunBase):
                         "the README's table of suite keys doesn't name 'home'")
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# EX-8: the claim check stops flagging what isn't a claim. The first real generation on Artemis's skill failed mostly
+# on quotes from the job ad ('your team of 8', the role's title), on '4 became team leads' against '4 of them became
+# team leads', on 'no one', and on headings written with '—' or ',' in place of '|'. Each made-up claim still fails.
+
+class TraceClaimsFair(TraceBase):
+    """EX-8: quotes from the job ad in a sentence about the employer, linking words after a number, a bare 'one', and
+    a fact bank heading written with other separators all pass; a claim built from the job ad's numbers still fails."""
+
+    def with_job(self, text, cover=None, job=None, bank=BANK):
+        """A workspace with the case's resume and cover letter, and the case's job ad under jobs/."""
+        ws = self.one(text, cover=cover, bank=bank)
+        name = self.folder.split("_", 1)[1] + ".md"
+        source = os.path.join(EXAMPLE, "fixtures", "jobs", name)
+        write(os.path.join(ws, *ARTEMIS.split("/"), "jobs", name), job if job is not None else open(source).read())
+        return ws
+
+    JOB = ("# Head of Engineering, Payments: Bluewater Pay\n\nWe process payments for 2,000 small online shops and are "
+           "growing from 40 to 120 engineers.\n")
+
+    def test_a_number_from_the_job_ad_passes_in_a_sentence_about_the_employer(self):  # covers: EX-8
+        for sentence in ("You process payments for 2,000 small online shops.",
+                         "Bluewater Pay is growing from 40 to 120 engineers, and I would like to help.",
+                         "I have not led an organisation of 120 engineers."):
+            with self.subTest(sentence):
+                self.assert_passes(self.with_job(resume(), cover=f"Dear team,\n\n{sentence}\n", job=self.JOB))
+
+    def test_a_number_from_the_job_ad_still_fails_as_a_claim(self):  # covers: EX-8
+        with self.subTest("on the resume"):
+            ws = self.with_job(resume(extra="- Grew the team from 40 to 120 engineers.\n"), job=self.JOB)
+            self.assert_fails_naming(ws, "120")
+        with self.subTest("in the cover letter, with 'no' in the same sentence"):
+            cover = "Dear team,\n\nI grew a team to 120 engineers with no lost transactions.\n"
+            self.assert_fails_naming(self.with_job(resume(), cover=cover, job=self.JOB), "120")
+        with self.subTest("without a job ad, as before"):
+            self.assert_fails_naming(self.one(resume(), cover="Dear team,\n\nYour 120 engineers.\n"), "120")
+
+    def test_a_name_from_the_job_ad_passes_unless_it_claims_the_job(self):  # covers: EX-8
+        job = "# Engineering Manager, Live Games Backend: Bluewater Pay\n"
+        with self.subTest("the role's title as the resume's headline"):
+            ws = self.with_job(resume(summary="Engineering Manager, Live Games Backend"), job=job)
+            self.assert_passes(ws)
+        with self.subTest("'at' the company on the resume"):
+            ws = self.with_job(resume(extra="- Engineering Manager at Bluewater Pay.\n"), job=job)
+            self.assert_fails_naming(ws, "Bluewater Pay")
+
+    def test_linking_words_after_a_number_and_a_bare_one_pass(self):  # covers: EX-8
+        bank = bank_with("- Hired 9 engineers; 4 of them became team leads.")
+        self.assert_passes(self.one(resume(extra="- 4 became team leads.\n"), bank=bank))
+        self.assert_passes(self.one(resume(extra="- Made sure no one was on call alone.\n")))
+        with self.subTest("a different number still fails"):
+            self.assert_fails_naming(self.one(resume(extra="- 5 became team leads.\n"), bank=bank), "5")
+
+    def test_a_fact_bank_heading_with_other_separators_passes(self):  # covers: EX-8
+        for heading in ("### Head of Engineering — Northwind Ledger | 2022 – 2025",
+                        "### Head of Engineering, Northwind Ledger, 2022-2025",
+                        "Head of Engineering — Northwind Ledger — 2022 – 2025"):
+            with self.subTest(heading):
+                self.assert_passes(self.one(resume(northwind=heading)))
+        with self.subTest("a heading mixing two jobs still fails"):
+            ws = self.one(resume(northwind="### Head of Engineering — Copperline Games | 2022 – 2025"))
+            self.assert_fails_naming(ws, re.compile(r"line \d+"))
+
+
 if __name__ == "__main__":
     unittest.main()

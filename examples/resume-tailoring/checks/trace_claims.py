@@ -29,6 +29,14 @@ line per problem and exits 1 when, in resume.md or cover.md:
 - he, his, him, himself, she, her, hers or herself appears as a word, in any case (the resume speaks for its owner,
   in the first person);
 - there is no resume in the application folder, or no fact bank.
+What isn't a claim passes:
+- a number or a name from the case's job ad (jobs/<company>_<role>.md, the frozen fixture matching the application
+  folder) in a sentence about the employer: one that says you or your, names the company, or says what the person
+  has not or never done ('your team of 8', 'I have not led 80 engineers'). A name from the job ad also passes when it
+  isn't introduced by 'at', 'for' or 'with' (the role's title as a headline). 'Led 80 engineers' still fails;
+- linking words after a number are skipped ('4 became team leads' traces to '4 of them became team leads'), and
+  'one' on its own isn't a number ('no one', 'one of them');
+- a fact bank heading written with other separators ('Head of Engineering — Northwind Ledger, 2022 – 2025').
 It exits 0, printing one line, when every claim it can see traces. It can't see a claim with no number, employer,
 title or date in it ('I led the payments migration' passes whether or not the fact bank says so).
 
@@ -49,10 +57,14 @@ SMALL = ("zero one two three four five six seven eight nine ten eleven twelve th
          "seventeen eighteen nineteen twenty").split()
 TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
 WORD_VALUES = {w: i for i, w in enumerate(SMALL)} | TENS
+# 'one' on its own is left out: it is far more often a pronoun ('no one', 'one of them') than a claim.
 NUMBER_WORD = re.compile(r"\b(" + "|".join(sorted(TENS, key=len, reverse=True)) + r")[-‐‑ ](one|two|three|four|five|"
-                         r"six|seven|eight|nine)\b|\b(" + "|".join(sorted(WORD_VALUES, key=len, reverse=True)) + r")\b",
+                         r"six|seven|eight|nine)\b|\b(" + "|".join(sorted((w for w in WORD_VALUES if w != "one"),
+                                                                       key=len, reverse=True)) + r")\b",
                          re.I)
 FOLLOWING = re.compile(r"[ \t]*-?[ \t]*([A-Za-z][A-Za-z'’]*)")
+# Linking words skipped when finding the word after a number: '4 of them became' and '4 became' trace alike.
+LINKING = {"of", "them", "the", "a", "an", "who", "which", "that"}
 PERCENT = re.compile(r"[ \t]*(?:percent|per cent)\b", re.I)
 MONTHS = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|" \
          r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
@@ -63,6 +75,7 @@ DATED = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 DASHES = re.compile(r"\s*[-‐‑‒–—−]+\s*")
 LEADER = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)?")
 HEADING = re.compile(r"^\s*#{1,6}\s")
+SEPARATORS = re.compile(r"\s*(?:[|,]|[‐‑‒–—−]|\s-\s|(?<=\d)-(?=\d))\s*")
 
 # How an employer is spotted outside an experience heading. This is a heuristic, not a parser:
 # - a run of two or more capitalised words ending in one of these company words ('Bluefjord Analytics',
@@ -99,19 +112,24 @@ def unconfirmed(line):
 
 
 def following_word(text, end):
-    m = FOLLOWING.match(text, end)
-    if not m:
-        return ""
-    word = m.group(1).casefold()
-    for tail in ("'s", "’s"):
-        if word.endswith(tail):
-            word = word[:-2]
-    return word.strip("'’")
+    """The word after a number, skipping linking words ('4 of them became' gives 'became'), or ''."""
+    while True:
+        m = FOLLOWING.match(text, end)
+        if not m:
+            return ""
+        word = m.group(1).casefold()
+        for tail in ("'s", "’s"):
+            if word.endswith(tail):
+                word = word[:-2]
+        word = word.strip("'’")
+        if word not in LINKING:
+            return word
+        end = m.end()
 
 
 def numbers(line):
-    """(the number as written, the key it traces by) for every number in line. The key is the value, the unit and,
-    for a bare number, the word after it; a year's key is the year alone."""
+    """(the number as written, the key it traces by, where it starts) for every number in line. The key is the value,
+    the unit and, for a bare number, the word after it; a year's key is the year alone."""
     text = FULL_DATE.sub(lambda m: " " * len(m.group(0)), line)
     found = []
     for m in NUMBER.finditer(text):
@@ -122,11 +140,11 @@ def numbers(line):
             percent, end = "%", PERCENT.match(text, end).end()
         unit = currency + letters.casefold() + plus + percent
         if not unit and YEAR.match(value) and "," not in whole:
-            found.append((m.group(0), ("year", value)))
+            found.append((m.group(0), ("year", value), m.start()))
         elif unit:
-            found.append((m.group(0), (value, unit, "")))
+            found.append((m.group(0), (value, unit, ""), m.start()))
         else:
-            found.append((m.group(0), (value, "", following_word(text, end))))
+            found.append((m.group(0), (value, "", following_word(text, end)), m.start()))
     for m in NUMBER_WORD.finditer(text):
         if m.group(1):
             value = TENS[m.group(1).casefold()] + WORD_VALUES[m.group(2).casefold()]
@@ -134,15 +152,20 @@ def numbers(line):
             value = WORD_VALUES[m.group(3).casefold()]
         end = m.end()
         if PERCENT.match(text, end):
-            found.append((m.group(0), (str(value), "%", "")))
+            found.append((m.group(0), (str(value), "%", ""), m.start()))
         else:
-            found.append((m.group(0), (str(value), "", following_word(text, end))))
+            found.append((m.group(0), (str(value), "", following_word(text, end)), m.start()))
     return found
 
 
 def content(line):
     """The line without its heading marks or bullet."""
     return line[LEADER.match(line).end():].strip()
+
+
+def words_only(text):
+    """An experience line's words, whatever separates its title, employer and dates ('|', a dash or a comma)."""
+    return " ".join(SEPARATORS.sub(" ", text).split()).casefold()
 
 
 def has_year(text):
@@ -197,8 +220,9 @@ class Bank:
         confirmed = [line for line in text.splitlines() if not unconfirmed(line)]
         self.keys = set()
         for line in confirmed:
-            self.keys.update(key for _written, key in numbers(line))
+            self.keys.update(key for _written, key, _start in numbers(line))
         self.lines = {plain(content(line)) for line in confirmed if HEADING.match(line) or experience_parts(line)}
+        self.words = {words_only(content(line)) for line in confirmed if experience_parts(line)}
         self.triples = set()
         for line in confirmed:
             parts = experience_parts(line)
@@ -250,6 +274,8 @@ def unknown_employers(line, bank, company):
 
 def heading_problems(line, bank):
     """The problems with an experience heading (or a dated heading) in line."""
+    if words_only(content(line)) in bank.words:  # a fact bank heading written with other separators
+        return []
     parts = experience_parts(line)
     if parts is None:
         if HEADING.match(line) and has_year(line) and plain(content(line)) not in bank.lines:
@@ -270,6 +296,49 @@ def heading_problems(line, bank):
     if not missing and (plain(title), plain(employer), date_range(dates)) not in bank.triples:
         missing.append("no fact bank heading has this title, employer and date range together")
     return missing
+
+
+# A sentence about the employer, where a number or a name quoted from the job ad isn't a claim about the person: it
+# addresses them ('your team of 8') or says what the person hasn't done ('I have not led 80 engineers').
+ABOUT_THEM = re.compile(r"\b(?:you|your|yours)\b|\b(?:not|never)\b|n['’]t\b", re.I)
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+class JobAd:
+    """The case's job ad, jobs/<company>_<role>.md under the assistant's folder (a frozen fixture, never the copy an
+    agent writes), matched to the application folder <date>_<company>_<role>."""
+
+    def __init__(self, text, company):
+        # A quote needn't keep the ad's wording: 'your team of 8' quotes '8 engineers'. So a number matches by its value
+        # and unit alone (a year by the year).
+        self.keys = {key[:2] for line in text.splitlines() for _w, key, _s in numbers(line)}
+        self.text = " " + plain(text) + " "
+        self.company = company
+
+    def holds_name(self, name):
+        return re.search(r"(?<![a-z0-9])" + re.escape(plain(name)) + r"(?![a-z0-9])", self.text) is not None
+
+    def about_them(self, sentence):
+        return bool(ABOUT_THEM.search(sentence)) or (self.company and self.company in slug(sentence))
+
+
+def job_ad(artemis, folder):
+    """The JobAd for an application folder, or None when there is no matching job ad."""
+    name = os.path.basename(os.path.normpath(folder))
+    if not DATED.match(name) or "_" not in name:
+        return None
+    path = os.path.join(artemis, "jobs", name.split("_", 1)[1] + ".md")
+    return JobAd(read(path), company_slug(folder)) if os.path.isfile(path) else None
+
+
+def sentence_at(line, start):
+    """The sentence of line holding the character at start."""
+    begin = 0
+    for m in SENTENCE_END.finditer(line):
+        if m.end() > start:
+            return line[begin:m.start()]
+        begin = m.end()
+    return line[begin:]
 
 
 def newest_resume(artemis):
@@ -294,13 +363,18 @@ def company_slug(folder):
     return slug(parts[1]) if len(parts) >= 3 and DATED.match(parts[0]) else ""
 
 
-def check_file(path, where, bank, company):
+def check_file(path, where, bank, company, job=None):
+    """The problem lines for one file. job, the case's JobAd or None: a number or a name it holds passes in a sentence
+    about the employer (see ABOUT_THEM), and a name it holds passes anywhere it isn't introduced by 'at', 'for' or
+    'with' (which would claim the person worked there)."""
     problems = []
     for number, line in enumerate(read(path).splitlines(), 1):
         at = f"{where}, line {number}"
         text = line.strip()
-        for written, key in numbers(line):
+        for written, key, start in numbers(line):
             if key not in bank.keys:
+                if job and key[:2] in job.keys and job.about_them(sentence_at(line, start)):
+                    continue
                 if key[0] == "year":
                     why = "the year isn't in the fact bank"
                 elif key[1]:
@@ -315,6 +389,9 @@ def check_file(path, where, bank, company):
                 problems.append(f"{at}: {what}: {text}")
         if experience_parts(line) is None:
             for name in unknown_employers(line, bank, company):
+                if job and job.holds_name(name) and not re.search(
+                        r"\b(?:at|for|with)\s+" + re.escape(name) + r"\b", line, re.I):
+                    continue
                 problems.append(f"{at}: the employer '{name}' isn't in the fact bank: {text}")
         for marker in MARKERS:
             if marker in line or (marker.startswith("[") and marker.casefold() in line.casefold()):
@@ -341,10 +418,11 @@ def check(artemis, application, shown):
             return [f"No resume found: there is no {shown(resume_path)}."], None
     bank = Bank(read(bank_path))
     folder = os.path.dirname(resume_path)
-    problems = check_file(resume_path, shown(resume_path), bank, "")
+    job = job_ad(artemis, folder)
+    problems = check_file(resume_path, shown(resume_path), bank, "", job)
     cover_path = os.path.join(folder, "cover.md")
     if os.path.isfile(cover_path):
-        problems += check_file(cover_path, shown(cover_path), bank, company_slug(folder))
+        problems += check_file(cover_path, shown(cover_path), bank, company_slug(folder), job)
     return problems, resume_path
 
 

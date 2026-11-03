@@ -91,6 +91,21 @@ Group, Inc, Ltd, GmbH, SRL and others; the list is `EMPLOYER_WORDS` in the scrip
 "at", "for" or "with", at least as many as the fact bank's shortest employer name. Such a name passes when it is one
 of the fact bank's employers or appears word for word on a confirmed line of the fact bank.
 
+What it lets through, because it isn't a claim:
+
+- a number or a name quoted from the case's job ad (the frozen file under `jobs/`, never a copy the agent wrote) in a
+  sentence about the employer: one that says "you" or "your", names the company, or says what the person has not or
+  never done. "Your team of 8" and "I have not led 80 engineers" pass; "Led 80 engineers" still fails. A name from
+  the job ad also passes where it isn't introduced by "at", "for" or "with", such as the role's title used as the
+  resume's headline;
+- "4 became team leads" when the fact bank says "4 of them became team leads": small linking words after a number
+  (of, them, the, who and the like) are skipped. "One" on its own isn't read as a number, since it is usually "no
+  one" or "one of";
+- a fact bank heading written with a dash or commas in place of `|`.
+
+A sentence that quotes the job ad without saying whose numbers they are ("Growing from 40 to 120 engineers is a
+hiring problem") still fails.
+
 What the check can't see:
 
 - a claim with no number, employer, title or date in it: "I led the payments migration" passes whether or not the
