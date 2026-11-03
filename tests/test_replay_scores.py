@@ -58,13 +58,15 @@ from unittest import mock
 
 
 GENOME = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(GENOME)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, checkout_path, requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 SCRIPTS = os.path.join(GENOME, "scripts")
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 import evolve  # noqa: E402
 
-REGISTA = REGISTA_PATH = os.path.join(REGISTA_CHECKOUT, "scripts", "regista.py")
+REGISTA = REGISTA_PATH = checkout_path("scripts", "regista.py")
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
 AXES = {"gates": "higher", "requirements": "higher", "review_rounds": "lower", "finding_severity": "lower",
@@ -504,6 +506,7 @@ class HardFailures(Base):
         self.assert_hard_failure(r.score(extra_main=[tool_use]), ".env", "protected")
 
 
+@requires_regista
 class LabelledRefusals(Base):
     def test_unsure_and_false_alarm_refusals_are_counted_not_hard(self):  # covers: FIT-5
         r = self.run_
@@ -622,6 +625,7 @@ class TamperedLog(Base):
         self.assert_hard_failure(self.run_.score(), "records tampered")
 
 
+@requires_regista
 class LabelsDuringTheRun(Base):
     def setUp(self):
         self.run_ = Run(pre_log=[OLD_LINE], baseline=True)

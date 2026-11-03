@@ -22,9 +22,11 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(ROOT)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, checkout_path, requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 EVOLVE = os.path.join(ROOT, "scripts", "evolve.py")
-REGISTA = os.path.join(REGISTA_CHECKOUT, "scripts", "regista.py")
+REGISTA = checkout_path("scripts", "regista.py")
 
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "TZ": "UTC"}
 AXES = ("gates", "requirements", "review_rounds", "finding_severity", "refusals", "correct_blocked", "tokens",
@@ -196,6 +198,7 @@ def label_false_alarm(project, home, when):
         raise AssertionError(f"refusals label failed: {r.stdout}{r.stderr}")
 
 
+@requires_regista
 class SignalsBase(unittest.TestCase):
     """Builds one fixture project, runs `bench build` on it and loads signals.json."""
     name = "sample"

@@ -19,6 +19,9 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 EVOLVE = os.path.join(ROOT, "scripts", "evolve.py")
 BASE_DAY = "2026-10-20"
 
@@ -259,6 +262,7 @@ KEYS = {"project", "repo", "step", "milestone", "parent", "finishing_commit", "s
         "outside_files", "brief", "baseline", "replayable", "reasons", "split", "screening"}
 
 
+@requires_regista
 class BenchBuildSample(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -459,6 +463,7 @@ def build_in_home(home, name="homeproj"):
     return r
 
 
+@requires_regista
 class BenchOutsideFilesUnderHome(unittest.TestCase):
     """~/ paths are resolved against HOME: one into the repository is inside; a wildcard counts when it matches."""
 
@@ -540,6 +545,7 @@ def build_many(parent):
     return r
 
 
+@requires_regista
 class BenchSplit(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

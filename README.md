@@ -4,13 +4,46 @@ The genome teaches Regista to improve its own prompts and rules by replaying the
 keeping the changes that do better. It lives in this folder, `genome/`, apart from Regista, which works without it.
 The plan is in [docs/genome-spec.md](docs/genome-spec.md). The tool is `genome/scripts/evolve.py`, a separate
 script that only reads the projects it learns from and never changes them. It reaches Regista only by running its
-command line, `scripts/regista.py`, in the Regista checkout that holds this folder, or in the checkout named by
-`regista_checkout` (an absolute path) in `evolve.json`.
+command line, `scripts/regista.py`, in the checkout named by `regista_checkout` (an absolute path) in
+`evolve.json`, else in the one named by the environment variable `GENOME_REGISTA_CHECKOUT`, else in the Regista
+checkout that holds this folder.
 Its files live in `~/.regista-evolve/` (or the folder in `REGISTA_EVOLVE_HOME`), with its settings in
 `evolve.json` there.
 
 The settings (`python3 genome/scripts/evolve.py config` prints them), the benchmark of past steps (`bench`), replays
 (`replay`) and generations (`generation`, `report` and `promote`) are described below.
+
+## Running the genome on its own
+
+This folder works without Regista around it. You can copy or clone it anywhere, for example to
+`~/genome-evolution`, and use it to evolve any skill or agent with a suite file (described in the next section).
+Only Regista's own adapter needs a Regista checkout: building the bench (`bench build`), replays, generations on
+the bench, seeding or expanding a genome without `--source`, and promoting a bench generation's winner without
+`--repo`. Without a checkout, those commands stop with one line saying how to name one, and change nothing.
+
+To run the genome's tests from a copy, go into the folder and run the unit tests, then the end-to-end tests:
+
+```
+cd ~/genome-evolution
+python3 -m unittest discover -s tests -t tests
+python3 -m unittest discover -s tests/e2e
+```
+
+They need only Python 3 and git. The tests that need Regista's command line or its files are skipped, and each
+skip gives the reason "no Regista checkout: set GENOME_REGISTA_CHECKOUT". Everything else runs.
+
+To use Regista's adapter, or to run those skipped tests too, point the genome at a Regista checkout, in either of
+two ways:
+
+- set the environment variable `GENOME_REGISTA_CHECKOUT` to the checkout's full path, for example
+  `export GENOME_REGISTA_CHECKOUT=~/regista` (the folder must hold `scripts/regista.py`, or the commands that need
+  it stop and say so);
+- or put `"regista_checkout": "/home/you/regista"` (an absolute path) in `evolve.json`, in the evolver's working
+  folder (`~/.regista-evolve/` or the folder in `REGISTA_EVOLVE_HOME`).
+
+When both are set, `evolve.json` wins. The tests read only the variable, because they never read your
+`evolve.json`. When this folder sits inside a Regista checkout, as `genome/`, that checkout is used and you need
+neither.
 
 ## Evolving any skill or agent
 

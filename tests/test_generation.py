@@ -42,7 +42,9 @@ import unittest
 from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(ROOT)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 if os.path.join(ROOT, "tests") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "tests"))
 import test_reflect_mutate as rm  # noqa: E402  (imported as a module, so its test classes don't run twice here)
@@ -161,6 +163,7 @@ def norm_cases(by_case):
     return {case_name(k): v for k, v in (by_case or {}).items()}
 
 
+@requires_regista
 class Base(rm.Base):
     """A temporary evolver home with the fake Regista checkout seeded as `seed`, the stand-in claude, a hand-built
     bench and the two fakes."""
@@ -629,6 +632,7 @@ class Confirmation(Base):
         return None
 
 
+@requires_regista
 class NothingElseStartsAGeneration(unittest.TestCase):
     """Only the user starts a generation: the hooks, the skills and regista.py never run `evolve.py generation`."""
 

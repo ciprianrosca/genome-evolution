@@ -10,13 +10,34 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 
 # The genome's own copy of Regista's tests/e2e/harness.py: the genome's tests never import Regista's test modules.
-# GENOME is the genome folder; REGISTA_CHECKOUT is the Regista checkout that holds it (its parent), reached only by
-# path and by running its command line as an outside program.
+# GENOME is the genome folder; REGISTA_CHECKOUT is the Regista checkout the tests use, reached only by path and by
+# running its command line as an outside program. It is found the way genome/tests/regista_location.py finds it (this
+# is its twin: the end-to-end folder is no package): GENOME_REGISTA_CHECKOUT (an absolute path), else the folder
+# holding genome/ when it has scripts/regista.py, else None, and then the tests that need Regista are skipped.
 GENOME = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-REGISTA_CHECKOUT = os.path.dirname(GENOME)
-TOOL = os.path.join(REGISTA_CHECKOUT, "scripts", "regista.py")
+SKIP_REASON = "no Regista checkout: set GENOME_REGISTA_CHECKOUT"
+
+
+def regista_checkout(environ=None):
+    """The Regista checkout the tests use (an absolute path), or None when none is found."""
+    environ = os.environ if environ is None else environ
+    named = (environ.get("GENOME_REGISTA_CHECKOUT") or "").strip()
+    if named:
+        return os.path.abspath(named)
+    around = os.path.dirname(GENOME)
+    if os.path.isfile(os.path.join(around, "scripts", "regista.py")):
+        return around
+    return None
+
+
+REGISTA_CHECKOUT = regista_checkout()
+requires_regista = unittest.skipIf(REGISTA_CHECKOUT is None, SKIP_REASON)
+# Regista's command line; without a checkout, a path that doesn't exist (the tests using it are skipped).
+TOOL = os.path.join(REGISTA_CHECKOUT or os.path.join(os.path.dirname(GENOME), "no-regista-checkout"),
+                    "scripts", "regista.py")
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
 PY = sys.executable
 

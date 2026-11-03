@@ -3,7 +3,9 @@
 
 The design is in genome/docs/genome-spec.md. This file is a separate standard-library script in the genome folder: it
 never imports regista.py and reaches the harness only through its command line (run_harness below), in the Regista
-checkout that holds the genome folder or in evolve.json's regista_checkout. Its working files live
+checkout named by evolve.json's regista_checkout, else by the environment variable GENOME_REGISTA_CHECKOUT, else the
+one that holds the genome folder. With none, the commands that need Regista stop with one line saying how to name
+one, and everything else (suites, seeding and promoting with --source) works. Its working files live
 outside every project, in $REGISTA_EVOLVE_HOME or ~/.regista-evolve/. Beside it are its two standard-library
 modules: genome.py (genomes, profiles and mutation) and evolve_core.py (the target-neutral generation loop behind an
 adapter); this file is the home of Regista's adapter, RegistaAdapter.
@@ -97,9 +99,11 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # the genome's scripts/
 GENOME_DIR = os.path.dirname(HERE)  # the genome folder
-# The Regista checkout this adapter runs as an outside program, by default the folder that holds the genome folder;
-# evolve.json's regista_checkout (an absolute path) overrides it. See regista_checkout() below.
+# The Regista checkout this adapter runs as an outside program: evolve.json's regista_checkout (an absolute path), else
+# the environment variable GENOME_REGISTA_CHECKOUT, else the folder that holds the genome folder when it is a Regista
+# checkout (it has scripts/regista.py), else none. See regista_checkout() below.
 DEFAULT_REGISTA_CHECKOUT = os.path.dirname(GENOME_DIR)
+CHECKOUT_VARIABLE = "GENOME_REGISTA_CHECKOUT"
 # The genome code is its own module beside this file (it knows nothing about Regista; genome/profiles/regista.json,
 # the profile, holds what is Regista's). The folder is added to the path for when this file is loaded from elsewhere.
 if HERE not in sys.path:
@@ -259,38 +263,109 @@ def load_config(home):
 CHECKOUT_KEY = "regista_checkout"  # evolve.json: the Regista checkout to run, an absolute path
 
 
+class NoRegistaCheckout(EvolveError):
+    """A command needs Regista's adapter (its command line or its files) and no Regista checkout was found."""
+
+
+def holding_checkout():
+    """The folder that holds the genome folder when it is a Regista checkout (it has scripts/regista.py), else None."""
+    if os.path.isfile(os.path.join(DEFAULT_REGISTA_CHECKOUT, "scripts", "regista.py")):
+        return DEFAULT_REGISTA_CHECKOUT
+    return None
+
+
 def regista_checkout(config=None):
-    """The Regista checkout the adapter works with: evolve.json's regista_checkout (an absolute path to a folder), else
-    the folder that holds the genome folder. It is the default source for seeding and generations, promote's default
-    repository and the genome `current`, and its scripts/regista.py is the command line run_harness runs. config is
-    the effective evolve.json; without it (the genome commands load none) the working folder's evolve.json is read
-    when there is one, and nothing is written."""
+    """The Regista checkout the adapter works with, or None when there is none. In order: evolve.json's
+    regista_checkout (an absolute path to a folder); the environment variable GENOME_REGISTA_CHECKOUT (made absolute,
+    and it must be a folder with scripts/regista.py); the folder that holds the genome folder when it has
+    scripts/regista.py (the genome inside a Regista checkout). It is the default source for seeding and generations,
+    promote's default repository and the genome `current`, and its scripts/regista.py is the command line run_harness
+    runs. config is the effective evolve.json; without it (the genome commands load none) the working folder's
+    evolve.json is read when there is one, and nothing is written. A command that needs the checkout gets it from
+    required_checkout(), which refuses with one plain line when there is none."""
     if config is None:
         home = evolve_home()
         config = load_config(home) if os.path.lexists(os.path.join(home, CONFIG_NAME)) else {}
     value = config.get(CHECKOUT_KEY)
     if value is None:
-        return DEFAULT_REGISTA_CHECKOUT
+        named = (os.environ.get(CHECKOUT_VARIABLE) or "").strip()
+        if named:
+            path = os.path.abspath(os.path.expanduser(named))
+            if not os.path.isfile(os.path.join(path, "scripts", "regista.py")):
+                raise EvolveError(f"{CHECKOUT_VARIABLE} is {path}, which isn't a Regista checkout (it has no "
+                                  f"scripts/regista.py); set it to the full path of a Regista checkout, or unset it.")
+            return path
+        return holding_checkout()
     if not isinstance(value, str) or not value.strip() or not os.path.isabs(os.path.expanduser(value)):
         raise EvolveError(f"{CHECKOUT_KEY} in evolve.json must be the absolute path of a Regista checkout, such as "
-                          f"/home/you/regista; got {value!r}. Fix it, or remove it to use the checkout that holds "
-                          f"the genome folder ({DEFAULT_REGISTA_CHECKOUT}).")
+                          f"/home/you/regista; got {value!r}. Fix it, or remove it to use {CHECKOUT_VARIABLE} or the "
+                          f"checkout that holds the genome folder.")
     path = os.path.normpath(os.path.expanduser(value))
     if not os.path.isdir(path):
         raise EvolveError(f"{CHECKOUT_KEY} in evolve.json is {path}, which isn't a folder; point it at a Regista "
-                          f"checkout, or remove it to use the checkout that holds the genome folder "
-                          f"({DEFAULT_REGISTA_CHECKOUT}).")
+                          f"checkout, or remove it to use {CHECKOUT_VARIABLE} or the checkout that holds the genome "
+                          f"folder.")
     return path
+
+
+def no_checkout_message():
+    """The one line a Regista-only command stops with when no Regista checkout is found."""
+    return (f"This command needs a Regista checkout, and none was found: set the environment variable "
+            f"{CHECKOUT_VARIABLE} to the full path of a Regista checkout, or set {CHECKOUT_KEY} to that path in "
+            f"evolve.json (in {evolve_home()}).")
+
+
+def required_checkout(config=None):
+    """The Regista checkout, for a command that can't work without one: NoRegistaCheckout when there is none."""
+    folder = regista_checkout(config)
+    if folder is None:
+        raise NoRegistaCheckout(no_checkout_message())
+    return folder
+
+
+def needs_regista(args):
+    """True when the command can only work with a Regista checkout (Regista's adapter): bench build, replay, a
+    generation on the bench (not --suite), seeding, expanding or mutating without --source (the source would be the
+    checkout), and promote without --repo of a Regista generation (or of any generation without --source, whose
+    repository would be the checkout)."""
+    command = getattr(args, "func", None)
+    if command in (cmd_bench_build, cmd_replay):
+        return True
+    if command is cmd_generation:
+        return getattr(args, "suite", None) is None
+    if command in (cmd_genome_seed, cmd_genome_expand, cmd_mutate):
+        return getattr(args, "source", None) is None
+    if command is cmd_promote:
+        if args.repo is not None:
+            return False
+        if args.source is None:
+            return True
+        gen_id = args.generation
+        path = os.path.join(evolve_home(), "runs", gen_id, GENERATION_FILE) if safe_name(gen_id) else None
+        state = load_spec(read_text(path)) if path and os.path.isfile(path) else None
+        if not isinstance(state, dict):
+            return False  # left to the command, which says the generation can't be read
+        spec = state.get("adapter")
+        kind = spec.get("kind") if isinstance(spec, dict) else spec
+        return spec is None or kind == RegistaAdapter.kind
+    return False
+
+
+def refuse_without_checkout(args):
+    """Before any other check and before anything is written: a Regista-only command with no Regista checkout stops
+    with one plain line saying how to point the genome at one."""
+    if needs_regista(args):
+        required_checkout()
 
 
 def regista_script(config=None):
     """The Regista checkout's command line, scripts/regista.py (run as a program, never imported)."""
-    return os.path.join(regista_checkout(config), "scripts", "regista.py")
+    return os.path.join(required_checkout(config), "scripts", "regista.py")
 
 
 def source_folder(args, config=None):
     """--source as a full path, or the Regista checkout when it wasn't given."""
-    return os.path.abspath(args.source) if args.source is not None else regista_checkout(config)
+    return os.path.abspath(args.source) if args.source is not None else required_checkout(config)
 
 
 def run_harness(*args, cwd=None, env=None, timeout=None):
@@ -3445,7 +3520,7 @@ def genome_folder(home, genome):
             return genome_lib.check_individual(home, genome, own_profile(home, genome, DEFAULT_PROFILE))
         except genome_lib.GenomeError as e:
             raise EvolveError(str(e)) from None
-    folder = regista_checkout()
+    folder = required_checkout()
     if not os.path.isfile(os.path.join(folder, ".claude-plugin", "plugin.json")):
         raise EvolveError(f"The Regista checkout ({folder}) has no .claude-plugin/plugin.json, so the genome `current` "
                           f"can't be loaded as a plugin.")
@@ -4564,7 +4639,7 @@ def harness_refusals(text, harness_name, regista_py):
     """The refusals in a hooks.log text as the harness lists them (`regista.py refusals --json`, so the user's labels
     count), oldest first, or None when that can't run. It runs on a scratch project holding only that log, never in
     the clone, whose config the agent could have changed."""
-    if not os.path.isfile(regista_py):
+    if not regista_py or not os.path.isfile(regista_py):
         return None
     tmp = tempfile.mkdtemp(prefix="regista-refusals-")
     try:
@@ -5109,7 +5184,9 @@ def score_run(clone_dir, case, transcript_paths, signals=None, baseline=None, ge
     settings = start_settings(clone_dir) if "commit_gates" not in baseline else baseline
     gate_runs = settings.get("gate_runs") if isinstance(settings.get("gate_runs"), dict) \
         else start_settings(clone_dir)["gate_runs"]
-    regista_py = os.path.join(genome_dir, "scripts", "regista.py") if genome_dir else regista_script()
+    # Without a Regista checkout (scoring called directly, outside a replay), the refusals are read from hooks.log.
+    checkout = genome_dir or regista_checkout()
+    regista_py = os.path.join(checkout, "scripts", "regista.py") if checkout else None
     is_clone = os.path.lexists(os.path.join(clone_dir, ".git"))
     tampered, (log_root, log_parts), history, late = run_records(clone_dir, reg, baseline, copies)
     seen = read_run_transcripts(list(transcript_paths or []), workspace)
@@ -7480,7 +7557,7 @@ def cmd_promote(args, home, config):
     return evolve_core.promote(
         home, config, state, genome, adapter,
         profile=lambda folder: genome_lib.load_profile(args.profile, source=folder),
-        repo=args.repo or source or regista_checkout(config), onto=args.onto, checks=promote_checks,
+        repo=args.repo or source or required_checkout(config), onto=args.onto, checks=promote_checks,
         remote=promote_remote, pr_command=pr_command, open_pr=not args.no_pr, prefix=PROMOTE_PREFIX, source=source)
 
 
@@ -7765,15 +7842,15 @@ def build_parser():
     p.add_argument("--id", default="seed", help="the genome's id (default: seed)")
     p.add_argument("--profile", default=DEFAULT_PROFILE, help="the target's profile (default: genome/profiles/regista.json)")
     p.add_argument("--source", default=None,
-                   help="the source folder (default: the Regista checkout, the folder holding genome/, or evolve.json "
-                        "regista_checkout)")
+                   help="the source folder (default: the Regista checkout: evolve.json regista_checkout, else "
+                        "GENOME_REGISTA_CHECKOUT, else the folder holding genome/)")
     p.set_defaults(func=cmd_genome_seed, setup=False)
     p = genome_sub.add_parser("expand", help="rebuild a genome's plugin folder from the source and the genome")
     p.add_argument("id")
     p.add_argument("--profile", default=DEFAULT_PROFILE, help="the target's profile (default: genome/profiles/regista.json)")
     p.add_argument("--source", default=None,
-                   help="the source folder (default: the Regista checkout, the folder holding genome/, or evolve.json "
-                        "regista_checkout)")
+                   help="the source folder (default: the Regista checkout: evolve.json regista_checkout, else "
+                        "GENOME_REGISTA_CHECKOUT, else the folder holding genome/)")
     p.set_defaults(func=cmd_genome_expand, setup=False)
     p = genome_sub.add_parser("show", help="print a genome's profile, parents, base, files, traits and their bounds")
     p.add_argument("id")
@@ -7796,8 +7873,8 @@ def build_parser():
     p.add_argument("--generation", default="adhoc", help="the replay's generation (default: adhoc)")
     p.add_argument("--profile", default=DEFAULT_PROFILE, help="the target's profile (default: genome/profiles/regista.json)")
     p.add_argument("--source", default=None,
-                   help="the source folder (default: the Regista checkout, the folder holding genome/, or evolve.json "
-                        "regista_checkout)")
+                   help="the source folder (default: the Regista checkout: evolve.json regista_checkout, else "
+                        "GENOME_REGISTA_CHECKOUT, else the folder holding genome/)")
     p.set_defaults(func=cmd_mutate)
 
     p = sub.add_parser("parents", help="rank a generation's genomes by their chance of being picked as the next parent")
@@ -7826,8 +7903,8 @@ def build_parser():
                         "same flag")
     p.add_argument("--profile", default=DEFAULT_PROFILE, help="the target's profile (default: genome/profiles/regista.json)")
     p.add_argument("--source", default=None,
-                   help="the source folder (default: the Regista checkout, the folder holding genome/, or evolve.json "
-                        "regista_checkout)")
+                   help="the source folder (default: the Regista checkout: evolve.json regista_checkout, else "
+                        "GENOME_REGISTA_CHECKOUT, else the folder holding genome/)")
     p.add_argument("--suite", default=None,
                    help="run the generation on a suite file's cases instead of the bench; needs --profile, --source "
                         "and --target, and a base genome seeded with that profile")
@@ -7885,6 +7962,8 @@ def main(argv=None):
     if getattr(args, "standalone", False):
         return run_standalone(args)
     try:
+        # A command that needs Regista's adapter stops first, when no Regista checkout is found, writing nothing.
+        refuse_without_checkout(args)
         # A check a command makes before anything is written (report and promote: a generation made with an adapter
         # kind this file doesn't know), so its refusal leaves the working folder as it was.
         if getattr(args, "check_first", None):

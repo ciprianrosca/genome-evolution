@@ -4,7 +4,8 @@ scripts/ or tests/ on sys.path, and the Regista adapter reaches Regista only by 
 checkout that holds genome/ or from evolve.json 'regista_checkout' (SEP-2); the genome's tests run as their own
 commit gates, genome-tests and genome-e2e, and Regista's tests and e2e gates don't reach genome/ (SEP-5).
 
-REGISTA_CHECKOUT is the Regista checkout that holds the genome folder (its parent). This file reaches it only by path
+REGISTA_CHECKOUT is the Regista checkout (genome/tests/regista_location.py: GENOME_REGISTA_CHECKOUT, else the folder holding
+genome/ when it has scripts/regista.py; without one these tests are skipped). This file reaches it only by path
 (reading files, listing them) and by running programs; it never imports anything from it.
 
 What the tests assume about the interface:
@@ -28,7 +29,9 @@ import tempfile
 import unittest
 
 GENOME = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(GENOME)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, requires_genome_inside_regista, requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 GENOME_SCRIPTS = ("evolve.py", "evolve_core.py", "genome.py", "suite.py")
 GENOME_MODULES = {name[:-3] for name in GENOME_SCRIPTS}
 SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv"}
@@ -178,6 +181,7 @@ def genome_reaches(tree):
 
 # SEP-1: the layout ----------------------------------------------------------------------------------------------------
 
+@requires_genome_inside_regista
 class GenomeFolderLayout(unittest.TestCase):
     """The genome's code, profile, spec and README are under genome/, and only there."""
 
@@ -337,6 +341,7 @@ print(json.dumps({"path": sys.path, "modules": files, "errors": errors}))
 """
 
 
+@requires_regista
 class GenomeImportsNothingFromRegista(unittest.TestCase):
     """Read with ast: no Python file under genome/ imports a Regista module or puts Regista's scripts/ or tests/ on
     sys.path. Then imported for real, in a separate Python: no module loaded from Regista's checkout outside genome/,
@@ -437,6 +442,7 @@ def calls(log):
         return [json.loads(line) for line in f if line.strip()]
 
 
+@requires_regista
 class AdapterRunsRegistasCommandLine(unittest.TestCase):
     """`bench build` reads a project's refusals with `regista.py refusals --json` from the checkout that holds
     genome/ (a copy of the genome inside a fake checkout), or from evolve.json's regista_checkout."""
@@ -457,9 +463,11 @@ class AdapterRunsRegistasCommandLine(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def bench_build(self, evolve, evolve_home):
+        env = self.sc.clean_env(self.home, evolve_home)
+        env.pop("GENOME_REGISTA_CHECKOUT", None)  # the variable would win over the folder holding genome/
         return subprocess.run([sys.executable, evolve, "bench", "build", self.project],
                               cwd=os.path.dirname(self.project), capture_output=True, text=True, encoding="utf-8",
-                              env=self.sc.clean_env(self.home, evolve_home), timeout=300)
+                              env=env, timeout=300)
 
     def assert_refusals_read_through(self, log, r):
         self.assertEqual(r.returncode, 0, f"bench build failed:\n{r.stdout}\n{r.stderr}")
@@ -519,6 +527,7 @@ def start_folder(command):
     return os.path.normpath(start)
 
 
+@requires_genome_inside_regista
 class GenomeGates(unittest.TestCase):
     """The project's config: genome-tests and genome-e2e run the genome's tests; tests and e2e stay out of genome/."""
 

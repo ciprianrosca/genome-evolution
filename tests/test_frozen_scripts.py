@@ -29,6 +29,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_replay_run as rr  # noqa: E402
+from regista_location import requires_regista  # noqa: E402
 
 PY = rr.PY
 EVOLVE = rr.EVOLVE
@@ -234,6 +235,7 @@ def entry_for(entries, path):
             or str(e.get("path") or "") == path]
 
 
+@requires_regista
 class AgentEditedScriptsAndRunnerConfig(unittest.TestCase):
     """One replay: the agent writes code failing the frozen test (2n+1), changes `test` and `e2e` to always pass,
     adds a `coverage` script, changes other package.json fields, edits .mocharc.json (the parent has one) and adds
@@ -315,6 +317,7 @@ class AgentEditedScriptsAndRunnerConfig(unittest.TestCase):
         self.assertTrue(notes, f"the scores carry a plain note that the agent changed them: {self.result.get('scores')}")
 
 
+@requires_regista
 class ParentPackageJsonNotValid(unittest.TestCase):
     """One replay of a project whose parent package.json isn't valid JSON: the agent fixes it and writes the right
     code; package.json stays as the agent wrote it for the final run, and result.json says why."""

@@ -34,7 +34,7 @@ import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from harness import CALC, GENOME, PY, REGISTA_CHECKOUT, SampleProject  # noqa: E402
+from harness import CALC, GENOME, PY, REGISTA_CHECKOUT, SampleProject, requires_regista  # noqa: E402
 from test_replay import SANDBOX_TOOLS  # noqa: E402
 
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
@@ -243,6 +243,7 @@ STEPS = [("m1-multiply", "MUL-1", "mul", "Multiply two numbers", "mul(a, b) SHAL
           "    return a - b\n")]
 
 
+@requires_regista
 class OneGeneration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

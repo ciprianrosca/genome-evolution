@@ -94,7 +94,9 @@ import uuid
 
 
 GENOME = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(GENOME)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, SKIP_REASON  # noqa: E402  the Regista checkout (or None): reached only by path
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
 PY = sys.executable
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -889,6 +891,8 @@ _TEMPLATE = {}
 
 
 def setUpModule():
+    if REGISTA_CHECKOUT is None:  # every test here replays a case: Regista's adapter
+        raise unittest.SkipTest(SKIP_REASON)
     tmp = tempfile.mkdtemp(prefix="regista-replay-tpl-")
     _TEMPLATE["tmp"] = tmp
     project = os.path.join(tmp, "projects", "doubler")

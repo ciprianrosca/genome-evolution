@@ -26,6 +26,7 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
 if os.path.join(ROOT, "tests") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "tests"))
+from regista_location import requires_regista  # noqa: E402  the Regista checkout (or None)
 EVOLVE = os.path.join(ROOT, "scripts", "evolve.py")
 
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "TZ": "UTC"}
@@ -244,6 +245,7 @@ def output(result):
     return f"exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 
+@requires_regista
 class ReplayFixture(unittest.TestCase):
     """Shared setup: the sample project, its live state, and its one case built by `bench build`."""
 

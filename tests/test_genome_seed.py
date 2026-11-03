@@ -30,7 +30,9 @@ import unittest
 from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(ROOT)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 if os.path.join(ROOT, "tests") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "tests"))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -513,6 +515,7 @@ SANDBOX_TOOLS = {
 }
 
 
+@requires_regista
 class ReplayMissingGenome(unittest.TestCase):
     """`evolve.py replay <case> --genome <id>` for a genome that was never seeded, on a real bench case."""
 

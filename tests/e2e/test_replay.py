@@ -20,7 +20,7 @@ import uuid
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)  # the genome's own copy of the harness, next to this file
-from harness import CALC, GENOME, PY, REGISTA_CHECKOUT, SampleProject  # noqa: E402
+from harness import CALC, GENOME, PY, REGISTA_CHECKOUT, SampleProject, requires_regista  # noqa: E402
 
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
 STEP = "m1-multiply"
@@ -153,6 +153,7 @@ SANDBOX_TOOLS = {
 }
 
 
+@requires_regista
 class ReplayOneCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

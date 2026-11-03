@@ -23,7 +23,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # the genome's own copy of the harness, next to this file
-from harness import GENOME, PY, SampleProject, decision, reason  # noqa: E402
+from harness import GENOME, PY, SampleProject, decision, reason, requires_regista  # noqa: E402
 
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
 
@@ -79,6 +79,7 @@ def step_line(step, line):
     return re.search(rf"(?<![\w-]){re.escape(step)}(?![\w-])", line) is not None
 
 
+@requires_regista
 class AuditReportEndToEnd(unittest.TestCase):
     def setUp(self):
         self.p = SampleProject()

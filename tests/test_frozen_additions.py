@@ -28,6 +28,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_replay_run as rr  # noqa: E402
 import test_replay_scores as ts  # noqa: E402
+from regista_location import REGISTA_CHECKOUT, requires_regista  # noqa: E402
 
 FROZEN = "tests/unit/test_double.py"
 CODE_RIGHT = "def double(n):\n    return 2 * n\n"
@@ -80,7 +81,8 @@ def notes_in(obj):
 
 
 def setUpModule():
-    rr.setUpModule()  # the sample project and its bench, built once for the replays below
+    if REGISTA_CHECKOUT is not None:  # the replays below need Regista; they are skipped without it
+        rr.setUpModule()  # the sample project and its bench, built once for the replays below
 
 
 def tearDownModule():
@@ -109,6 +111,7 @@ class AdditionReplay:
         self.w.cleanup()
 
 
+@requires_regista
 class AdditionCase(unittest.TestCase):
     """Shared checks for a replay that only adds lines to the frozen test."""
 

@@ -19,6 +19,9 @@ import unittest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 EVOLVE = os.path.join(REPO, "scripts", "evolve.py")
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 # The local modules evolve.py may import: scripts/genome.py (spec genome-seed), scripts/evolve_core.py (spec
 # adapter-core), scripts/suite.py (spec suite-files) and scripts/runners.py (spec suite-runs). Each is otherwise
 # standard library only, and may import only the local modules listed for it here: suite imports genome, evolve_core
@@ -206,6 +209,7 @@ class Evo3UnbuiltCommands(unittest.TestCase):
                     self.assert_not_built_answer(args, r)
 
 
+@requires_regista
 class Evo3ProjectUnchanged(unittest.TestCase):
     def setUp(self):
         self.assertTrue(os.path.isfile(EVOLVE), "scripts/evolve.py doesn't exist")

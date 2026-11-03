@@ -37,7 +37,9 @@ import unittest
 
 
 GENOME = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # the genome folder
-REGISTA_CHECKOUT = os.path.dirname(GENOME)  # the Regista checkout that holds the genome: reached only by path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import REGISTA_CHECKOUT, requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 if os.path.join(GENOME, "tests") not in sys.path:
     sys.path.insert(0, os.path.join(GENOME, "tests"))
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
@@ -517,6 +519,8 @@ def build_bench(prefix, config=None, extra_files=None):
 
 
 def setUpModule():
+    if REGISTA_CHECKOUT is None:  # the bench needs Regista; the tests using it are skipped
+        return
     _TEMPLATE.update(build_bench("regista-twscore-tpl-"))
 
 
@@ -659,6 +663,7 @@ def class_world(cls, tests, bugs=True, template=None, **options):
     cls.w.run()
 
 
+@requires_regista
 class Base(unittest.TestCase):
     tests = GOOD
     bugs = True

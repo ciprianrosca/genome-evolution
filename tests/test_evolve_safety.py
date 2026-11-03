@@ -32,6 +32,9 @@ from unittest import mock
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 EVOLVE = os.path.join(REPO, "scripts", "evolve.py")
 PY = sys.executable
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from regista_location import requires_regista  # noqa: E402  the Regista checkout (or None): reached only by path
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "TZ": "UTC",
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
@@ -610,6 +613,7 @@ def load_bench_fixtures():
     return module
 
 
+@requires_regista
 class BenchBuildWithNoPrefix(unittest.TestCase):
     """A project with diff.noprefix=true: `bench build` still finds the covers markers."""
 

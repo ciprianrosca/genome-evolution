@@ -31,7 +31,8 @@ import unittest
 
 # The genome folder, and the Regista checkout that holds it (reached only by path and as an outside program).
 GENOME = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-REGISTA_CHECKOUT = os.path.dirname(GENOME)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # the genome's own harness, next to this file
+from harness import REGISTA_CHECKOUT, requires_regista  # noqa: E402  the Regista checkout (or None)
 EVOLVE = os.path.join(GENOME, "scripts", "evolve.py")
 PY = sys.executable
 GEN = "g1"
@@ -72,6 +73,7 @@ def shows(line, value):
     return any(re.search(rf"(?<![\d.]){re.escape(f)}(?![\d])", line) for p in (False, True) for f in forms(value, p))
 
 
+@requires_regista
 class ParentsFromTheCommandLine(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="regista-e2e-parents-")
