@@ -36,8 +36,9 @@ in `suite.json`). That home holds a made-up `personal-assistants/artemis/` with:
   succeeds, so a run never depends on the real one.
 
 The fact bank, the CV, the job descriptions and the renderer are frozen: a run that changes one of them fails,
-whatever its checks say. Claude Code still uses your real configuration folder and subscription login, and your
-real home folder's private files stay unreadable to the agent.
+whatever its checks say. Claude Code still uses your real configuration folder and subscription login, and nothing
+else in your real home folder is readable to the agent, so it can't reach your real fact bank at
+`/home/<you>/personal-assistants/artemis/` by its full path.
 
 Each prompt asks for the application the way you would ask the skill, then names the application folder, so the
 checks know where to look:

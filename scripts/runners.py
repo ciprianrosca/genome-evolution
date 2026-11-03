@@ -12,7 +12,8 @@ A suite names its runner (suite.py's load_suite checks the value):
   the program (a stand-in in tests).
 
 The default runner's agent may not read the folders and files run() is given, nor the user's credentials and Claude
-Code's transcripts, file history and login file under the home folder; every hook is off, and its tools' deny rules
+Code's transcripts, file history and login file under the home folder, nor anything else at the top of the real home
+folder but Claude Code's configuration folder (and the shell's own files when the suite gives no home); every hook is off, and its tools' deny rules
 and the sandbox both enforce it. A suite may give the agent a home folder of its own inside the workspace: either
 runner then runs with HOME set to it, and the default runner keeps the real Claude configuration folder (and so the
 subscription's login) through CLAUDE_CONFIG_DIR; the deny rules keep naming the real home folder's private files. Every runner runs with API credentials, other token and key variables and the parent
@@ -69,6 +70,12 @@ TOKEN_SUFFIXES = ("_TOKEN", "_API_KEY", "_SECRET", "_SECRET_KEY", "_ACCESS_KEY",
 # nothing. CLAUDE_FILES, the Claude Code ones, are denied under CLAUDE_CONFIG_DIR too when it is set.
 CLAUDE_FILES = ("projects", "file-history", ".credentials.json")
 HOME_SECRETS = tuple(f".claude/{name}" for name in CLAUDE_FILES) + (".ssh", ".aws", ".config/gh", ".gnupg", ".netrc")
+# Beyond those, the default runner's agent may read nothing at the top of the real home folder but Claude Code's own
+# configuration folder (its shell sources a snapshot kept there) and, when the suite gives the agent no home of its
+# own, the files a shell and its tools read at start: everything else (other projects, personal files, the real
+# copies of a skill's working files) is denied, so a run can't pick up the user's real data by an absolute path.
+SHELL_FILES = (".bashrc", ".bash_profile", ".bash_logout", ".profile", ".zshrc", ".zprofile", ".zshenv",
+               ".gitconfig", ".cache", ".local", ".npm", ".nvm", ".pyenv", ".cargo", ".rustup", ".bun", ".deno")
 # The host's project settings files, which would load in Claude Code from a workspace (hooks running outside the
 # sandbox, sandbox lists merged): never left in a workspace, whichever runner runs (workspace_files_to_remove).
 HOST_WORKSPACE_FILES = (".claude/settings.json", ".claude/settings.local.json")
@@ -331,7 +338,7 @@ def run(runner, workspace, individual, prompt, model, timeout_seconds, config=No
         with open(prompt_file, "w", encoding="utf-8", newline="") as f:
             f.write(prompt)
         if runner == DEFAULT_RUNNER:
-            deny = deny_paths(list(deny_read) + home_secrets(), workspace)
+            deny = deny_paths(list(deny_read) + home_secrets() + home_entries(workspace, home is not None), workspace)
             argv = default_argv(config, workspace, prompt, model, sandbox, deny)
             env, tokens = runner_env(default=True), "claude-json"
         else:
@@ -384,6 +391,26 @@ def home_secrets():
     if config_dir:
         paths += [os.path.join(os.path.expanduser(config_dir), name) for name in CLAUDE_FILES]
     return paths
+
+
+def home_entries(workspace, own_home):
+    """The entries at the top of the real home folder the default runner's agent may not read: all of them but the
+    Claude configuration folder (and an entry holding it or the workspace, which can't be denied), and, when the
+    suite gives the agent no home of its own (own_home false), the shell's files, SHELL_FILES."""
+    home = os.path.expanduser("~")
+    try:
+        names = sorted(os.listdir(home))
+    except OSError:
+        return []
+    keep = set() if own_home else set(SHELL_FILES)
+    config_dir = claude_config_dir()
+    found = []
+    for name in names:
+        path = os.path.join(home, name)
+        if name in keep or holds(path, config_dir) or holds(path, workspace):
+            continue
+        found.append(path)
+    return found
 
 
 def holds(path, folder):

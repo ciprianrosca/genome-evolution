@@ -232,7 +232,7 @@ contain `..`. Unknown keys are refused. These are the suite file's top-level key
 | `name` | required | The suite's name: letters, digits, `_`, `.` and `-`, starting with a letter or digit. |
 | `describe` | none | One sentence on what the suite tests. |
 | `install` | required | The folder in the workspace where the skill's files are copied, such as `.claude/skills/standup-summary`, or `.` for the workspace's top. |
-| `home` | none | A folder in the workspace the agent gets as its home folder (`HOME`), for a skill that works in files under `~`. Fixtures can be placed under it like anywhere else. Claude Code still uses your real configuration folder and login, and the private files in your real home folder stay unreadable. |
+| `home` | none | A folder in the workspace the agent gets as its home folder (`HOME`), for a skill that works in files under `~`. Fixtures can be placed under it like anywhere else. Claude Code still uses your real configuration folder and login, and nothing else in your real home folder is readable to the agent. |
 | `runner` | `"claude"` | How the agent is started: Claude Code, or your own command (see Runners below). |
 | `model` | `"sonnet"` | The model the agent runs on. |
 | `timeout_minutes` | 15 | Each run's time limit, in minutes. |
@@ -338,6 +338,11 @@ qualifies, the report says why.
 - The agent can't read the suite with its checks and judge, the evolver's working folder, other runs, the git
   history of a repository holding the suite, Claude Code's transcripts, file history and login file, or common
   credential folders (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.gnupg`, `~/.netrc`).
+- Nor can it read anything else at the top of your real home folder, such as your other projects, except Claude
+  Code's configuration folder (`~/.claude`, which its shell needs). When the suite gives the agent no home folder of
+  its own, the shell's usual files (`.bashrc`, `.profile`, `.gitconfig`, `.cache`, `.local` and the like) stay
+  readable too, so commands keep working. This keeps a run from reading your real files by their full path, even
+  when the skill names a folder under `~` that also exists in your real home.
 - Check scripts are copied in only after the run, into the run's folder, never into the workspace.
 - A frozen judge: its rubric and model are fixed in the suite, and the evolver refuses a suite whose files are among
   those a genome may change.

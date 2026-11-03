@@ -720,6 +720,36 @@ class HomeSetting(runs.RunBase):
                 self.assertFalse([p for p in deny_read if runs.inside(fixture, p)],
                                  f"the sandbox still lets the agent read its home's fixtures: {deny_read}")
 
+    def test_default_runner_denies_the_rest_of_the_real_home(self):  # covers: EX-6
+        # A run once read the real fact bank by its absolute path, /home/<user>/personal-assistants/...: every entry at
+        # the top of the real home folder is denied but the Claude configuration folder (and, without a suite home,
+        # the shell's own files).
+        real_cv = os.path.join(self.home, *HOME_FIXTURE.split("/"))
+        claude_md = os.path.join(self.home, ".claude", "CLAUDE.md")
+        bashrc = os.path.join(self.home, ".bashrc")
+        for path in (real_cv, claude_md, bashrc):
+            runs.write(path, "real\n")
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        for label, home, bashrc_denied in (("with a suite home", HOME_DIR, True), ("without a suite home", None, False)):
+            with self.subTest(label), mock.patch.dict(os.environ, env, clear=True):
+                self.clear_log("claude.jsonl")
+                folder = os.path.join(self.tmp, "runs", re.sub(r"\W+", "-", label))
+                result = self.run_case(self.home_suite(runner="claude", home=home), folder=folder)
+                self.assertEqual(result.get("outcome"), "done", result)
+                call = self.one_call("claude.jsonl")
+                fake = call["env_values"]["HOME"]
+                rules, deny_read = runs.deny_rules(call), runs.deny_read_paths(call, fake)
+
+                def denied(target):
+                    by_tools = all([r for r in rules if runs.rule_covers(r, tool, target, fake)]
+                                   for tool in ("Read", "Glob", "Grep"))
+                    return by_tools and bool([p for p in deny_read if runs.inside(target, p)])
+
+                self.assertTrue(denied(real_cv), f"the real fact bank stays readable: {rules}")
+                self.assertFalse([r for r in rules if runs.rule_covers(r, "Read", claude_md, fake)],
+                                 "the Claude configuration folder is denied, which Claude Code's shell needs")
+                self.assertEqual(denied(bashrc), bashrc_denied, "the shell's files follow the suite's home")
+
     def test_readme_key_table_names_the_home(self):  # covers: EX-6
         section = readme_tests.find_section(readme_tests.read_readme(), readme_tests.SECTION_TITLE)
         self.assertIsNotNone(section, "the README has its 'Evolving any skill or agent' section")
